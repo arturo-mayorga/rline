@@ -1,0 +1,56 @@
+# Build output. build/ is what build.sh creates; the rest covers an in-tree
+# cmake configure, which is easy to do by accident.
+build/
+out/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+compile_commands.json
+
+# Generated Visual Studio project files and MSVC intermediates.
+*.sln
+*.vcxproj
+*.vcxproj.*
+*.suo
+*.user
+.vs/
+Debug/
+Release/
+x64/
+Win32/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.exe
+*.dll
+
+# Written by rline at runtime, next to the exe.
+rline-pos.txt
+rline.log
+beep-*.wav
+
+# Test binaries, if built into the tree rather than /tmp.
+test-refline
+test-overlay
+test-lateral
+test-event-cue
+irdump
+
+# Editor and OS clutter. .vscode is deliberately not ignored: launch and task
+# settings are worth sharing for a project that has to be built on Windows.
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# NOT ignored, on purpose:
+#   data/lap.csv                 ships beside the exe
+#   data/drive-roadamerica.csv   a real captured lap that test-lateral asserts against

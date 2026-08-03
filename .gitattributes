@@ -1,0 +1,8 @@
+# This tree is edited from WSL and compiled by MSVC on the Windows side, so
+# without normalisation every file churns between LF and CRLF depending on
+# which side touched it last.
+* text=auto
+
+# Telemetry is parsed by code that already strips CR, and these files are large
+# enough that a line-ending rewrite would be a pointless diff.
+*.csv -text
