@@ -15,6 +15,10 @@ static irsdkCVar g_speed("Speed");
 static irsdkCVar g_yawNorth("YawNorth");
 static irsdkCVar g_velocityX("VelocityX");
 static irsdkCVar g_velocityY("VelocityY");
+static irsdkCVar g_brake("Brake");
+static irsdkCVar g_throttle("Throttle");
+static irsdkCVar g_steer("SteeringWheelAngle");
+static irsdkCVar g_latAccel("LatAccel");
 static irsdkCVar g_isOnTrack("IsOnTrack");
 
 namespace
@@ -64,6 +68,12 @@ void IrTelemetrySystem::tick(class ECS::World *world, float deltaTime)
             ego.onTrack = g_isOnTrack.getBool();
             ego.pct = g_lapDistPct.getFloat();
             ego.speed = g_speed.getFloat();
+            ego.brake = g_brake.getFloat();
+            ego.throttle = g_throttle.getFloat();
+            ego.steer = g_steer.getFloat();
+            ego.latAccel = g_latAccel.getFloat();
+            ego.grip.add(ego.steer, ego.latAccel, ego.speed);
+            ego.pushHistory(ego.pct, ego.brake, ego.throttle);
 
             const int lap = g_lap.getInt();
             const double now = g_sessionTime.getDouble();

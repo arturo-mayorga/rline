@@ -7,6 +7,9 @@
 #include "components/rendering-comp.h"
 
 #include "systems/brake-audio-sys.h"
+#include "systems/coach-speech-sys.h"
+#include "systems/corner-coach-sys.h"
+#include "systems/telemetry-stream-sys.h"
 #include "systems/demo-telemetry-sys.h"
 #include "systems/irtelemetry-sys.h"
 #include "systems/refline-overlay-sys.h"
@@ -36,6 +39,13 @@ namespace
         bool noAudio = false;
         bool dumpBeeps = false;
         float beepInterval = 0.5f;
+        // Streams to the coaching relay by default so the rig needs no
+        // arguments. rline-relay.txt beside the exe overrides this, and
+        // --relay overrides that, so a changed IP never needs a rebuild.
+        std::string relay = "192.168.1.161";
+        bool noRelay = false;
+        bool noSpeech = false;
+        bool noCornerCoach = false;
         int exitAfterMs = 0; // 0 = run until killed
         bool help = false;
     };
@@ -92,6 +102,14 @@ namespace
                 o.noAudio = true;
             else if (!strcmp(a, "--dump-beeps"))
                 o.dumpBeeps = true;
+            else if (!strcmp(a, "--relay") && i + 1 < argc)
+                o.relay = argv[++i];
+            else if (!strcmp(a, "--no-relay"))
+                o.noRelay = true;
+            else if (!strcmp(a, "--no-speech"))
+                o.noSpeech = true;
+            else if (!strcmp(a, "--no-corner-coach"))
+                o.noCornerCoach = true;
             else if (!strcmp(a, "--beep-interval") && i + 1 < argc)
                 o.beepInterval = (float)atof(argv[++i]);
             else if (!strcmp(a, "--exit-after"))
@@ -166,6 +184,11 @@ namespace
             "  --exit-after <ms>     quit after this long (for automated checks)\n"
             "  --verbose             log state to the console and rline.log\n"
             "  --unlocked            start unlocked so it can be dragged straight away\n"
+            "  --relay <host[:port]> coaching relay to stream to; overrides the default\n"
+            "                        and rline-relay.txt\n"
+            "  --no-relay            do not stream telemetry anywhere\n"
+            "  --no-speech           show coaching notes but do not read them aloud\n"
+            "  --no-corner-coach     stop calling out each corner as you exit it\n"
             "  --no-audio            silence the braking countdown\n"
             "  --beep-interval <s>   spacing between countdown beeps (default 0.5)\n"
             "\n"
@@ -214,6 +237,34 @@ int main(int argc, char **argv)
             else
             {
                 SetProcessDPIAware(); // good enough on older builds
+            }
+        }
+    }
+
+    // A one-line rline-relay.txt beside the exe overrides the built-in host.
+    // Skipped when --relay was given explicitly.
+    {
+        bool explicitRelay = false;
+        for (int i = 1; i < argc; ++i)
+            if (!strcmp(argv[i], "--relay"))
+                explicitRelay = true;
+
+        if (!explicitRelay)
+        {
+            FILE *f = fopen(resolveBesideExe("rline-relay.txt").c_str(), "r");
+            if (f)
+            {
+                char buf[128] = {};
+                if (fgets(buf, sizeof(buf), f))
+                {
+                    std::string v(buf);
+                    while (!v.empty() && (v.back() == '\n' || v.back() == '\r' ||
+                                          v.back() == ' ' || v.back() == '\t'))
+                        v.pop_back();
+                    if (!v.empty())
+                        opt.relay = v;
+                }
+                fclose(f);
             }
         }
     }
@@ -270,6 +321,8 @@ int main(int argc, char **argv)
     EgoStateComponentSP ego(new EgoStateComponent());
     ent->assign<EgoStateComponentSP>(ego);
 
+    ent->assign<CoachMessageComponentSP>(new CoachMessageComponent());
+
     OverlayConfigComponentSP cfg(new OverlayConfigComponent());
     cfg->mph = opt.mph;
     cfg->lateralExaggeration = opt.exaggeration;
@@ -311,6 +364,28 @@ int main(int argc, char **argv)
         audio->setInterval(opt.beepInterval);
         world->registerSystem(audio);
     }
+    if (!opt.relay.empty() && !opt.noRelay)
+    {
+        std::string host = opt.relay;
+        int port = wire::kDefaultPort;
+        const size_t colon = host.find(':');
+        if (colon != std::string::npos)
+        {
+            port = atoi(host.c_str() + colon + 1);
+            host = host.substr(0, colon);
+        }
+        world->registerSystem(new TelemetryStreamSystem(host, port));
+    }
+
+    if (!opt.noCornerCoach)
+        world->registerSystem(new CornerCoachSystem());
+
+    // One voice, whatever produced the note: the relay pushes some, the corner
+    // coach produces others, and two ISpVoice instances would talk over
+    // each other.
+    if (!opt.noSpeech)
+        world->registerSystem(new CoachSpeechSystem());
+
     world->registerSystem(new ReflineOverlaySystem());
     WindowRenderingSystem *windowSys = new WindowRenderingSystem();
     if (opt.unlocked)

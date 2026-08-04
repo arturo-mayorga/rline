@@ -150,8 +150,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    const int readoutH = 34, barH = 26;
-    const int viewH = kH - readoutH - barH;
+    // Must track the layout in refline-overlay-sys.cpp.
+    const int readoutH = 34, barH = 26, traceH = 78;
+    const int viewH = kH - readoutH - barH - traceH;
     const int cx = kW / 2;
     const int cy = (int)(viewH * 0.78f);
 

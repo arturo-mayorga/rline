@@ -15,8 +15,26 @@ struct RefPoint
     float speed;   // m/s
     float t;       // seconds since the lap's first sample
     float bearing; // direction of travel, radians clockwise from north
-    float brake;   // 0..1, zero when the CSV has no Brake column
-    float steer;   // radians, zero when the CSV has no steering column
+    float brake;    // 0..1, zero when the CSV has no Brake column
+    float steer;    // radians, zero when the CSV has no steering column
+    float throttle; // 0..1, zero when the CSV has no Throttle column
+};
+
+// What the reference driver actually did through one corner. Precomputed at
+// load so the rig can judge a corner the instant it is over, with no network
+// and no analysis machine involved.
+struct RefCorner
+{
+    int n = 0;
+    // Entry reaches back to cover the braking zone; turn-in is where the
+    // corner proper starts. Minimum speed must be measured from turn-in, or a
+    // corner that follows soon after another picks up its neighbour's minimum.
+    float pctEntry = 0, pctTurnIn = 0, pctApex = 0, pctExit = 0;
+    float vmin = 0;            // m/s at the slowest point
+    float peakBrake = 0;       // highest pressure on the way in, 0..1
+    float peakSteer = 0;       // most lock the reference needed, radians
+    float releasePct = -1;     // where the brake finally came off
+    float fullThrottlePct = -1;// where it went back to full throttle
 };
 
 // Where the reference driver braked, turned in and clipped the apex. Derived
@@ -41,6 +59,7 @@ struct RefLine
 {
     std::vector<RefPoint> pts;      // sorted by pct
     std::vector<RefEvent> events;   // sorted by pct
+    std::vector<RefCorner> corners; // one per detected corner, in lap order
     bool hasBrake = false;          // whether the CSV carried the channels
     bool hasSteer = false;
 

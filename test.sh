@@ -7,7 +7,7 @@ g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-refline \
     tests/test-refline.cpp src/refline.cpp
 
 g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-overlay \
-    tests/test-overlay.cpp src/refline.cpp \
+    tests/test-overlay.cpp src/refline.cpp src/grip-curve.cpp \
     src/components/rendering-comp.cpp src/systems/refline-overlay-sys.cpp
 
 /tmp/rline-test-refline data/lap.csv
@@ -23,3 +23,8 @@ g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-event-cue \
     tests/test-event-cue.cpp src/event-cue.cpp src/refline.cpp
 echo
 /tmp/rline-test-event-cue data/lap.csv
+
+g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-grip-curve \
+    tests/test-grip-curve.cpp src/grip-curve.cpp
+echo
+/tmp/rline-test-grip-curve

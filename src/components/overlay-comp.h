@@ -2,6 +2,7 @@
 #define overlay_comp_h_
 
 #include "../ecs.h"
+#include "../grip-curve.h"
 #include "../refline.h"
 
 #include <memory>
@@ -19,6 +20,14 @@ struct EgoStateComponent
 
     float pct = 0;   // LapDistPct
     float speed = 0; // m/s
+    float brake = 0;    // 0..1
+    float throttle = 0; // 0..1
+    float steer = 0;    // radians
+    float latAccel = 0; // m/s2
+
+    // Learned from this driver in this car, so it needs no reference lap and
+    // works on any track from the first few corners.
+    GripCurve grip;
     int lap = -1;
 
     // Metres right of the reference line. iRacing publishes no absolute
@@ -29,6 +38,28 @@ struct EgoStateComponent
     // the overlay can work in absolute metres as if it had been measured.
     float x = 0;
     float y = 0;
+
+    // Recent pedal history, so the overlay can draw the shape of a brake
+    // application rather than just its current value. A ring rather than a
+    // growing buffer: this is written 60 times a second, forever.
+    struct PedalSample
+    {
+        float pct = 0;
+        float brake = 0;
+        float throttle = 0;
+    };
+    static const int kHistory = 600; // 10 s at 60 Hz
+    PedalSample hist[kHistory];
+    int histCount = 0;
+    int histHead = 0;
+
+    void pushHistory(float p, float b, float t)
+    {
+        hist[histHead] = PedalSample{p, b, t};
+        histHead = (histHead + 1) % kHistory;
+        if (histCount < kHistory)
+            ++histCount;
+    }
 };
 ECS_DEFINE_TYPE(EgoStateComponent);
 typedef std::shared_ptr<EgoStateComponent> EgoStateComponentSP;
@@ -44,6 +75,19 @@ struct RefLineComponent
 };
 ECS_DEFINE_TYPE(RefLineComponent);
 typedef std::shared_ptr<RefLineComponent> RefLineComponentSP;
+
+// A coaching note pushed from the relay. Held here rather than in the stream
+// system so the overlay and the speech system both read the same state.
+struct CoachMessageComponent
+{
+    ECS_DECLARE_TYPE;
+
+    std::string text;      // what to show
+    float ttl = 0;         // seconds of display left
+    bool speakPending = false; // set when a new note arrives, cleared once spoken
+};
+ECS_DEFINE_TYPE(CoachMessageComponent);
+typedef std::shared_ptr<CoachMessageComponent> CoachMessageComponentSP;
 
 struct OverlayConfigComponent
 {

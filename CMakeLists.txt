@@ -18,19 +18,25 @@ add_executable(rline
     src/main.cpp
     src/refline.cpp
     src/event-cue.cpp
+    src/corner-coach.cpp
+    src/grip-curve.cpp
     src/components/rendering-comp.cpp
     src/systems/irtelemetry-sys.cpp
     src/systems/demo-telemetry-sys.cpp
     src/systems/refline-overlay-sys.cpp
     src/systems/brake-audio-sys.cpp
     src/systems/window-rendering-sys.cpp
+    src/systems/telemetry-stream-sys.cpp
+    src/systems/coach-speech-sys.cpp
+    src/systems/corner-coach-sys.cpp
     src/irsdk/irsdk_client.cpp
     src/irsdk/irsdk_utils.cpp
     src/irsdk/yaml_parser.cpp
 )
 
-# winmm: PlaySound, for the braking countdown.
-target_link_libraries(rline winmm)
+# winmm: PlaySound for the countdowns. ws2_32: the telemetry link to the relay.
+# ole32: SAPI speech, for reading coaching notes aloud.
+target_link_libraries(rline winmm ws2_32 ole32)
 
 if(MSVC)
     target_compile_options(rline PRIVATE /W3 /permissive-)
@@ -57,6 +63,7 @@ add_executable(test-refline
 add_executable(test-overlay
     tests/test-overlay.cpp
     src/refline.cpp
+    src/grip-curve.cpp
     src/components/rendering-comp.cpp
     src/systems/refline-overlay-sys.cpp
 )
@@ -66,9 +73,23 @@ add_executable(test-lateral
     src/refline.cpp
 )
 
+add_executable(test-grip-curve
+    tests/test-grip-curve.cpp
+    src/grip-curve.cpp
+)
+
+add_executable(test-corner-coach
+    tests/test-corner-coach.cpp
+    src/corner-coach.cpp
+    src/grip-curve.cpp
+    src/refline.cpp
+)
+
 add_executable(test-event-cue
     tests/test-event-cue.cpp
     src/event-cue.cpp
+    src/corner-coach.cpp
+    src/grip-curve.cpp
     src/refline.cpp
 )
 
@@ -76,6 +97,13 @@ add_executable(test-event-cue
 #
 # Lists the channels a live session exposes and can capture them to CSV. Used to
 # establish that iRacing publishes no live position. Not shipped.
+
+# Receives telemetry from the rig and spools it to disk. Runs on the analysis
+# machine, so it can be changed freely without touching the rig.
+add_executable(relay
+    tools/relay.cpp
+)
+target_link_libraries(relay ws2_32)
 
 add_executable(irdump
     tools/irdump.cpp
@@ -89,7 +117,7 @@ add_executable(irdump
 # Static CRT: every resulting exe runs on a clean Windows install with no
 # Visual C++ redistributable and no dev tools.
 if(MSVC)
-    foreach(t rline test-refline test-overlay test-lateral test-event-cue irdump)
+    foreach(t rline relay test-refline test-overlay test-lateral test-event-cue test-corner-coach test-grip-curve irdump)
         set_property(TARGET ${t} PROPERTY
                      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endforeach()
@@ -102,6 +130,10 @@ add_test(NAME overlay
          COMMAND test-overlay "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv")
 add_test(NAME event-cue
          COMMAND test-event-cue "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv")
+add_test(NAME grip-curve
+         COMMAND test-grip-curve)
+add_test(NAME corner-coach
+         COMMAND test-corner-coach "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv")
 add_test(NAME lateral
          COMMAND test-lateral "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv"
                               "${CMAKE_CURRENT_SOURCE_DIR}/data/drive-roadamerica.csv")

@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -123,10 +125,66 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
                          c.r, c.g, c.b);
             };
 
-            // Layout: view on top, then the bar, then the readout.
+            // A coaching note sits above everything: it is the only thing on
+            // screen that is not always present, so it must be unmissable.
+            ECS::ComponentHandle<CoachMessageComponentSP> msgH =
+                ent->get<CoachMessageComponentSP>();
+            auto drawCoachNote = [&]()
+            {
+                if (!msgH.isValid())
+                    return;
+                CoachMessageComponent &m = *msgH.get();
+                if (m.ttl <= 0 || m.text.empty())
+                    return;
+                m.ttl -= deltaTime / 1000.0f;
+
+                // Wrap on spaces at roughly the panel width.
+                const size_t perLine = 30;
+                std::vector<std::string> lines;
+                std::string cur;
+                std::string word;
+                for (size_t i = 0; i <= m.text.size(); ++i)
+                {
+                    const char c = (i < m.text.size()) ? m.text[i] : ' ';
+                    if (c == ' ')
+                    {
+                        if (cur.empty())
+                            cur = word;
+                        else if (cur.size() + 1 + word.size() <= perLine)
+                            cur += " " + word;
+                        else
+                        {
+                            lines.push_back(cur);
+                            cur = word;
+                        }
+                        word.clear();
+                    }
+                    else
+                        word.push_back(c);
+                }
+                if (!cur.empty())
+                    lines.push_back(cur);
+                if (lines.size() > 3)
+                    lines.resize(3);
+
+                const int lh = 20;
+                const int panelH = 10 + (int)lines.size() * lh;
+                dl->rect(0, 0, W, panelH, kPanel.r, kPanel.g, kPanel.b);
+                dl->rect(0, panelH, W, 2, kTurnMark.r, kTurnMark.g, kTurnMark.b);
+
+                for (size_t i = 0; i < lines.size(); ++i)
+                {
+                    std::wstring w(lines[i].begin(), lines[i].end());
+                    dl->text(w, 8, 5 + (int)i * lh, 17,
+                             kText.r, kText.g, kText.b);
+                }
+            };
+
+            // Layout: view, then the brake trace, then the bar, then the readout.
             const int readoutH = 34;
             const int barH = 26;
-            const int viewH = H - readoutH - barH;
+            const int traceH = 78;
+            const int viewH = H - readoutH - barH - traceH;
 
             wchar_t buf[128];
 
@@ -147,18 +205,114 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
             {
                 swprintf(buf, 128, L"no reference lap: %hs", ref.error.c_str());
                 status(buf, kBad);
+                // --- steering saturation -----------------------------------------
+            // The only cue here that needs no reference lap: past the measured
+            // peak, more lock produces less grip, so this is the input to back
+            // off rather than a comparison with someone else's lap.
+            {
+                const float peak = ego.grip.peakSteer();
+                if (peak > 0)
+                {
+                    const int sy = viewH - 16;
+                    const int sw = W - 20;
+                    const float full = peak * 1.6f; // bar runs well past the peak
+                    const float f = std::min(fabsf(ego.steer) / full, 1.0f);
+                    const int px = (int)(f * sw);
+                    const int limit = (int)((peak / full) * sw);
+
+                    dl->rect(10, sy, sw, 8, kPanel.r, kPanel.g, kPanel.b);
+
+                    const bool over = fabsf(ego.steer) > peak;
+                    const Rgb c = over ? kBad : kGood;
+                    dl->rect(10, sy, px, 8, c.r, c.g, c.b);
+
+                    // Where grip stops improving.
+                    dl->rect(10 + limit, sy - 3, 2, 14,
+                             kText.r, kText.g, kText.b);
+
+                    if (over)
+                        dl->text(L"UNWIND", 10 + limit + 8, sy - 7, 15,
+                                 kBad.r, kBad.g, kBad.b);
+                }
+            }
+
+            drawCoachNote();
                 return;
             }
 
             if (!ego.connected)
             {
                 status(L"waiting for iRacing...", kDim);
+                // --- steering saturation -----------------------------------------
+            // The only cue here that needs no reference lap: past the measured
+            // peak, more lock produces less grip, so this is the input to back
+            // off rather than a comparison with someone else's lap.
+            {
+                const float peak = ego.grip.peakSteer();
+                if (peak > 0)
+                {
+                    const int sy = viewH - 16;
+                    const int sw = W - 20;
+                    const float full = peak * 1.6f; // bar runs well past the peak
+                    const float f = std::min(fabsf(ego.steer) / full, 1.0f);
+                    const int px = (int)(f * sw);
+                    const int limit = (int)((peak / full) * sw);
+
+                    dl->rect(10, sy, sw, 8, kPanel.r, kPanel.g, kPanel.b);
+
+                    const bool over = fabsf(ego.steer) > peak;
+                    const Rgb c = over ? kBad : kGood;
+                    dl->rect(10, sy, px, 8, c.r, c.g, c.b);
+
+                    // Where grip stops improving.
+                    dl->rect(10 + limit, sy - 3, 2, 14,
+                             kText.r, kText.g, kText.b);
+
+                    if (over)
+                        dl->text(L"UNWIND", 10 + limit + 8, sy - 7, 15,
+                                 kBad.r, kBad.g, kBad.b);
+                }
+            }
+
+            drawCoachNote();
                 return;
             }
 
             if (!ego.onTrack)
             {
                 status(L"not on track", kDim);
+                // --- steering saturation -----------------------------------------
+            // The only cue here that needs no reference lap: past the measured
+            // peak, more lock produces less grip, so this is the input to back
+            // off rather than a comparison with someone else's lap.
+            {
+                const float peak = ego.grip.peakSteer();
+                if (peak > 0)
+                {
+                    const int sy = viewH - 16;
+                    const int sw = W - 20;
+                    const float full = peak * 1.6f; // bar runs well past the peak
+                    const float f = std::min(fabsf(ego.steer) / full, 1.0f);
+                    const int px = (int)(f * sw);
+                    const int limit = (int)((peak / full) * sw);
+
+                    dl->rect(10, sy, sw, 8, kPanel.r, kPanel.g, kPanel.b);
+
+                    const bool over = fabsf(ego.steer) > peak;
+                    const Rgb c = over ? kBad : kGood;
+                    dl->rect(10, sy, px, 8, c.r, c.g, c.b);
+
+                    // Where grip stops improving.
+                    dl->rect(10 + limit, sy - 3, 2, 14,
+                             kText.r, kText.g, kText.b);
+
+                    if (over)
+                        dl->text(L"UNWIND", 10 + limit + 8, sy - 7, 15,
+                                 kBad.r, kBad.g, kBad.b);
+                }
+            }
+
+            drawCoachNote();
                 return;
             }
 
@@ -299,6 +453,81 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
             dl->disc(cx, cy, 7, kPanel.r, kPanel.g, kPanel.b);
             dl->disc(cx, cy, 5, col.r, col.g, col.b);
 
+            // --- brake trace --------------------------------------------------
+            // The shape of the pedal application, not just its current value.
+            // Understeer here comes from releasing square rather than tapering,
+            // and that is invisible in a single number.
+            {
+                const int ty = viewH;
+                const int th = traceH;
+                dl->rect(0, ty, W, th, kPanel.r, kPanel.g, kPanel.b);
+
+                const float behindM = 90.0f;   // of track shown to the left
+                const float aheadM = 190.0f;   // and to the right
+                const float spanM = behindM + aheadM;
+                const int plotTop = ty + 14;
+                const int plotH = th - 22;
+
+                auto xOf = [&](float relM)
+                {
+                    return (int)(((relM + behindM) / spanM) * (float)W);
+                };
+                auto yOf = [&](float pedal)
+                {
+                    return plotTop + plotH - (int)(pedal * (float)plotH);
+                };
+
+                dl->text(L"BRAKE", 6, ty + 1, 13, kDim.r, kDim.g, kDim.b);
+
+                // Reference trace across the whole window, including what is
+                // still to come - that is the shape to copy.
+                {
+                    PolyCmd rp;
+                    rp.r = kLine.r; rp.g = kLine.g; rp.b = kLine.b;
+                    rp.width = 2;
+                    for (int px = 0; px <= W; px += 3)
+                    {
+                        const float relM = (px / (float)W) * spanM - behindM;
+                        float p = ego.pct + relM / line.length;
+                        if (p < 0) p += 1.0f;
+                        if (p >= 1.0f) p -= 1.0f;
+
+                        const RefSample rs = refAt(line, p);
+                        const float b = (rs.idx >= 0) ? line.pts[rs.idx].brake : 0.0f;
+                        rp.pts.push_back(DrawPoint{px, yOf(b)});
+                    }
+                    dl->polys.push_back(rp);
+                }
+
+                // Your own trace, which can only run up to now.
+                {
+                    PolyCmd yp;
+                    yp.r = 255; yp.g = 255; yp.b = 255;
+                    yp.width = 2;
+                    for (int k = 0; k < ego.histCount; ++k)
+                    {
+                        const int idx = (ego.histHead - ego.histCount + k +
+                                         2 * EgoStateComponent::kHistory) %
+                                        EgoStateComponent::kHistory;
+                        const EgoStateComponent::PedalSample &sm = ego.hist[idx];
+
+                        float d = sm.pct - ego.pct;
+                        if (d > 0.5f) d -= 1.0f;
+                        if (d < -0.5f) d += 1.0f;
+                        const float relM = d * line.length;
+                        if (relM < -behindM || relM > 0.5f)
+                            continue;
+                        yp.pts.push_back(DrawPoint{xOf(relM), yOf(sm.brake)});
+                    }
+                    if (yp.pts.size() > 1)
+                        dl->polys.push_back(yp);
+                }
+
+                // "Now" marker, so the two traces can be read against each other.
+                dl->rect(xOf(0.0f), plotTop - 2, 1, plotH + 4,
+                         kTurnMark.r, kTurnMark.g, kTurnMark.b);
+            }
+
             // --- backing panel for the bar and readout ------------------------
             // Emitted before the bar chrome so it sits behind it: the renderer
             // draws all rects in order, then polylines, discs and text.
@@ -353,5 +582,38 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
                 swprintf(buf, 128, L"%+.0f %s", d, cfg.mph ? L"mph" : L"km/h");
                 dl->text(buf, W - 132, textY, 22, sc.r, sc.g, sc.b);
             }
+
+            // --- steering saturation -----------------------------------------
+            // The only cue here that needs no reference lap: past the measured
+            // peak, more lock produces less grip, so this is the input to back
+            // off rather than a comparison with someone else's lap.
+            {
+                const float peak = ego.grip.peakSteer();
+                if (peak > 0)
+                {
+                    const int sy = viewH - 16;
+                    const int sw = W - 20;
+                    const float full = peak * 1.6f; // bar runs well past the peak
+                    const float f = std::min(fabsf(ego.steer) / full, 1.0f);
+                    const int px = (int)(f * sw);
+                    const int limit = (int)((peak / full) * sw);
+
+                    dl->rect(10, sy, sw, 8, kPanel.r, kPanel.g, kPanel.b);
+
+                    const bool over = fabsf(ego.steer) > peak;
+                    const Rgb c = over ? kBad : kGood;
+                    dl->rect(10, sy, px, 8, c.r, c.g, c.b);
+
+                    // Where grip stops improving.
+                    dl->rect(10 + limit, sy - 3, 2, 14,
+                             kText.r, kText.g, kText.b);
+
+                    if (over)
+                        dl->text(L"UNWIND", 10 + limit + 8, sy - 7, 15,
+                                 kBad.r, kBad.g, kBad.b);
+                }
+            }
+
+            drawCoachNote();
         });
 }

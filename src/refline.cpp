@@ -112,6 +112,7 @@ bool parseRefLineCsv(const std::string &text, RefLine &out, std::string *err)
     // Optional: present in an iRacing export, absent from a bare path log.
     const int cBrk = findColumn(header, "Brake");
     const int cStr = findColumn(header, "SteeringWheelAngle");
+    const int cThr = findColumn(header, "Throttle");
 
     if (cLat < 0 || cLon < 0 || cPct < 0 || cSpd < 0)
     {
@@ -122,6 +123,7 @@ bool parseRefLineCsv(const std::string &text, RefLine &out, std::string *err)
 
     int needed = std::max(std::max(cLat, cLon), std::max(cPct, cSpd));
     needed = std::max(needed, std::max(cBrk, cStr));
+    needed = std::max(needed, cThr);
 
     out.hasBrake = (cBrk >= 0);
     out.hasSteer = (cStr >= 0);
@@ -129,7 +131,7 @@ bool parseRefLineCsv(const std::string &text, RefLine &out, std::string *err)
     struct Raw
     {
         double lat, lon;
-        float pct, speed, brake, steer;
+        float pct, speed, brake, steer, throttle;
     };
     std::vector<Raw> raw;
     raw.reserve(8192);
@@ -152,6 +154,7 @@ bool parseRefLineCsv(const std::string &text, RefLine &out, std::string *err)
         r.speed = (float)atof(f[cSpd].c_str());
         r.brake = (cBrk >= 0) ? (float)atof(f[cBrk].c_str()) : 0.0f;
         r.steer = (cStr >= 0) ? (float)atof(f[cStr].c_str()) : 0.0f;
+        r.throttle = (cThr >= 0) ? (float)atof(f[cThr].c_str()) : 0.0f;
 
         // iRacing reports 0,0 before the car is placed on track.
         if (r.lat == 0.0 && r.lon == 0.0)
@@ -185,6 +188,7 @@ bool parseRefLineCsv(const std::string &text, RefLine &out, std::string *err)
         p.speed = r.speed;
         p.brake = r.brake;
         p.steer = r.steer;
+        p.throttle = r.throttle;
         p.t = 0;
         p.x = (float)((r.lon - out.lon0) * out.mPerLon);
         p.y = (float)((r.lat - out.lat0) * out.mPerLat);
@@ -384,6 +388,58 @@ void detectRefEvents(RefLine &out)
 
     std::sort(out.events.begin(), out.events.end(),
               [](const RefEvent &a, const RefEvent &b) { return a.pct < b.pct; });
+
+    // Per-corner reference behaviour, so the rig can compare a corner the
+    // moment the driver is through it.
+    out.corners.clear();
+    for (const auto &sp : merged)
+    {
+        if (s[sp.second] - s[sp.first] < kMinCornerM)
+            continue;
+
+        RefCorner rc;
+        rc.n = (int)out.corners.size() + 1;
+
+        int apex = sp.first;
+        for (int i = sp.first; i <= sp.second; ++i)
+            if (fabsf(out.pts[i].steer) > fabsf(out.pts[apex].steer))
+                apex = i;
+
+        // Entry reaches back far enough to include the whole braking zone.
+        int entry = sp.first;
+        while (entry > 0 && s[sp.first] - s[entry] < kBrakeLookbackM)
+            --entry;
+
+        rc.pctEntry = out.pts[entry].pct;
+        rc.pctTurnIn = out.pts[sp.first].pct;
+        rc.pctApex = out.pts[apex].pct;
+        rc.pctExit = out.pts[sp.second].pct;
+
+        rc.vmin = out.pts[sp.first].speed;
+        for (int i = sp.first; i <= sp.second; ++i)
+        {
+            rc.vmin = std::min(rc.vmin, out.pts[i].speed);
+            rc.peakSteer = std::max(rc.peakSteer, fabsf(out.pts[i].steer));
+        }
+
+        for (int i = entry; i <= apex; ++i)
+        {
+            rc.peakBrake = std::max(rc.peakBrake, out.pts[i].brake);
+            if (out.pts[i].brake > kBrakeOn)
+                rc.releasePct = out.pts[i].pct;
+        }
+
+        for (int i = apex; i < n; ++i)
+        {
+            if (out.pts[i].throttle > 0.95f)
+            {
+                rc.fullThrottlePct = out.pts[i].pct;
+                break;
+            }
+        }
+
+        out.corners.push_back(rc);
+    }
 }
 
 float distanceAhead(const RefLine &line, float fromPct, float toPct)
