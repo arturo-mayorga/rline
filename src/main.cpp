@@ -2,6 +2,7 @@
 
 #include "ecs.h"
 #include "refline.h"
+#include "talk-button.h"
 
 #include "components/overlay-comp.h"
 #include "components/rendering-comp.h"
@@ -13,6 +14,7 @@
 #include "systems/demo-telemetry-sys.h"
 #include "systems/irtelemetry-sys.h"
 #include "systems/refline-overlay-sys.h"
+#include "systems/voice-input-sys.h"
 #include "systems/window-rendering-sys.h"
 
 #include <algorithm>
@@ -46,6 +48,17 @@ namespace
         bool noRelay = false;
         bool noSpeech = false;
         bool noCornerCoach = false;
+        bool noVoiceInput = false;
+        // The talk button is read straight off the wheel, as <device>:<button>,
+        // remembered in rline-talk.txt beside the exe and discovered by
+        // --bind-talk. Empty talkChannel means "use the wheel"; setting it
+        // reads an iRacing telemetry channel instead, which is off by default
+        // because the obvious channel - PushToTalk - also opens voice chat to
+        // everyone in the session.
+        std::string talkButton;
+        bool bindTalk = false;
+        bool voiceInproc = false;
+        std::string talkChannel;
         int exitAfterMs = 0; // 0 = run until killed
         bool help = false;
     };
@@ -110,6 +123,16 @@ namespace
                 o.noSpeech = true;
             else if (!strcmp(a, "--no-corner-coach"))
                 o.noCornerCoach = true;
+            else if (!strcmp(a, "--no-voice-input"))
+                o.noVoiceInput = true;
+            else if (!strcmp(a, "--talk-button") && i + 1 < argc)
+                o.talkButton = argv[++i];
+            else if (!strcmp(a, "--bind-talk"))
+                o.bindTalk = true;
+            else if (!strcmp(a, "--voice-inproc"))
+                o.voiceInproc = true;
+            else if (!strcmp(a, "--talk-channel") && i + 1 < argc)
+                o.talkChannel = argv[++i];
             else if (!strcmp(a, "--beep-interval") && i + 1 < argc)
                 o.beepInterval = (float)atof(argv[++i]);
             else if (!strcmp(a, "--exit-after"))
@@ -189,10 +212,21 @@ namespace
             "  --no-relay            do not stream telemetry anywhere\n"
             "  --no-speech           show coaching notes but do not read them aloud\n"
             "  --no-corner-coach     stop calling out each corner as you exit it\n"
+            "  --bind-talk           bind the talk button from the command line;\n"
+            "                        normally done in move mode (Ctrl+Shift+M)\n"
+            "  --talk-button <d:b>   set it directly, as device:button\n"
+            "  --voice-inproc        use the in-process recogniser with the\n"
+            "                        default microphone; try this if the console\n"
+            "                        never says \"microphone audio started\"\n"
+            "  --no-voice-input      do not listen for push-to-talk\n"
+            "  --talk-channel <name> read a telemetry channel instead of the\n"
+            "                        wheel. Note that iRacing's own PushToTalk\n"
+            "                        also transmits to everyone in the session\n"
             "  --no-audio            silence the braking countdown\n"
             "  --beep-interval <s>   spacing between countdown beeps (default 0.5)\n"
             "\n"
             "Press Ctrl+Shift+M to unlock the overlay and drag it with the mouse;\n"
+            "while unlocked, pressing any wheel button binds it as the talk button.\n"
             "press it again to lock it and make it click-through. The position is\n"
             "remembered in rline-pos.txt beside the exe.\n"
             "\n"
@@ -322,6 +356,8 @@ int main(int argc, char **argv)
     ent->assign<EgoStateComponentSP>(ego);
 
     ent->assign<CoachMessageComponentSP>(new CoachMessageComponent());
+    ent->assign<DriverSpeechComponentSP>(new DriverSpeechComponent());
+    ent->assign<SpeechQueueComponentSP>(new SpeechQueueComponent());
 
     OverlayConfigComponentSP cfg(new OverlayConfigComponent());
     cfg->mph = opt.mph;
@@ -385,6 +421,37 @@ int main(int argc, char **argv)
     // each other.
     if (!opt.noSpeech)
         world->registerSystem(new CoachSpeechSystem());
+
+    // Registered after the stream system so an utterance recognised this tick
+    // waits for the next one before going up the wire. That costs 16 ms and
+    // keeps the ordering obvious: speech is always queued, never sent from
+    // inside the recogniser's own tick.
+    if (!opt.noVoiceInput)
+    {
+        const std::string talkCfg = resolveBesideExe("rline-talk.txt");
+
+        // --talk-button beats rline-talk.txt, which beats nothing bound at all.
+        talk::Spec button;
+        std::string source = opt.talkButton;
+        if (source.empty())
+        {
+            FILE *f = fopen(talkCfg.c_str(), "r");
+            if (f)
+            {
+                char buf[64] = {};
+                if (fgets(buf, sizeof(buf), f))
+                    source = buf;
+                fclose(f);
+            }
+        }
+        if (!source.empty() && !talk::parseSpec(source, &button))
+            printf("rline: '%s' is not a device:button binding, ignoring it\n",
+                   source.c_str());
+
+        world->registerSystem(
+            new VoiceInputSystem(button, talkCfg, opt.bindTalk, opt.talkChannel,
+                                 opt.voiceInproc));
+    }
 
     world->registerSystem(new ReflineOverlaySystem());
     WindowRenderingSystem *windowSys = new WindowRenderingSystem();

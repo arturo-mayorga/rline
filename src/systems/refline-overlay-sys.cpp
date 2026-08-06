@@ -123,6 +123,26 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
                 dl->rect(0, H / 2 - 16, W, 34, kPanel.r, kPanel.g, kPanel.b);
                 dl->text(L"drag to move - Ctrl+Shift+M to lock", 10, H / 2 - 9, 16,
                          c.r, c.g, c.b);
+
+                // Move mode doubles as talk-button binding: it is the only
+                // configuration screen the rig has, and it is reachable from
+                // the wheel. Nothing here assumes which button he wants - it
+                // shows what is bound and takes whatever he presses next.
+                ECS::ComponentHandle<DriverSpeechComponentSP> spH =
+                    ent->get<DriverSpeechComponentSP>();
+                if (!spH.isValid())
+                    return;
+
+                const DriverSpeechComponent &sp = *spH.get();
+                wchar_t line[128];
+                if (sp.buttonLabel.empty())
+                    swprintf(line, 128, L"press a wheel button to set talk");
+                else
+                    swprintf(line, 128, L"talk button %hs - press to change",
+                             sp.buttonLabel.c_str());
+
+                dl->rect(0, H / 2 + 20, W, 30, kPanel.r, kPanel.g, kPanel.b);
+                dl->text(line, 10, H / 2 + 26, 15, c.r, c.g, c.b);
             };
 
             // A coaching note sits above everything: it is the only thing on
@@ -180,11 +200,17 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
                 }
             };
 
-            // Layout: view, then the brake trace, then the bar, then the readout.
+            // Layout, top to bottom: view, live brake trace, the frozen trace
+            // of the corner just finished, the cross-track bar, the readout.
+            // Each band owns its rows outright - the bar used to be offset from
+            // the top of the trace rather than the bottom, so the two drew over
+            // each other and neither was readable.
             const int readoutH = 34;
             const int barH = 26;
             const int traceH = 78;
-            const int viewH = H - readoutH - barH - traceH;
+            const int frozenH = 56;
+            const int viewH = H - readoutH - barH - traceH - frozenH;
+            const int bottomY = viewH + traceH + frozenH;
 
             wchar_t buf[128];
 
@@ -528,13 +554,82 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
                          kTurnMark.r, kTurnMark.g, kTurnMark.b);
             }
 
+            // --- frozen trace of the corner just finished ---------------------
+            // The live trace above scrolls past at racing speed, which is
+            // exactly when there is no attention spare to read it. This holds
+            // the last completed corner until the next one is done, so it can
+            // be read on the way out.
+            {
+                const int fy = viewH + traceH;
+                dl->rect(0, fy, W, frozenH, kPanel.r, kPanel.g, kPanel.b);
+
+                const CornerTrace &ct = ego.lastCorner;
+                const int plotTop = fy + 14;
+                const int plotH = frozenH - 18;
+
+                auto fxOf = [&](int bin)
+                {
+                    return 4 + (int)((bin / (float)(CornerTrace::kBins - 1)) *
+                                     (float)(W - 8));
+                };
+                auto fyOf = [&](float pedal)
+                {
+                    return plotTop + plotH - (int)(pedal * (float)plotH);
+                };
+
+                if (!ct.valid)
+                {
+                    dl->text(L"LAST CORNER", 6, fy + 1, 13, kDim.r, kDim.g, kDim.b);
+                    dl->text(L"waiting for a corner", 8, fy + 24, 15,
+                             kDim.r, kDim.g, kDim.b);
+                }
+                else
+                {
+                    swprintf(buf, 128, L"LAST CORNER  T%d", ct.corner);
+                    dl->text(buf, 6, fy + 1, 13, kDim.r, kDim.g, kDim.b);
+
+                    // Peak pressure as a number too: "harder than the reference"
+                    // is a fact worth stating, not an impression left to two
+                    // lines that are only a few pixels apart at the top.
+                    const bool harder = ct.youPeak > ct.refPeak + 0.08f;
+                    const Rgb pc = harder ? kBad : kDim;
+                    swprintf(buf, 128, L"%.0f%% vs %.0f%%",
+                             ct.youPeak * 100.0f, ct.refPeak * 100.0f);
+                    dl->text(buf, W - 112, fy + 1, 13, pc.r, pc.g, pc.b);
+
+                    PolyCmd rp;
+                    rp.r = kLine.r; rp.g = kLine.g; rp.b = kLine.b;
+                    rp.width = 2;
+                    PolyCmd yp;
+                    yp.r = 255; yp.g = 255; yp.b = 255;
+                    yp.width = 2;
+                    for (int i = 0; i < CornerTrace::kBins; ++i)
+                    {
+                        rp.pts.push_back(DrawPoint{fxOf(i), fyOf(ct.ref[i])});
+                        yp.pts.push_back(DrawPoint{fxOf(i), fyOf(ct.you[i])});
+                    }
+                    dl->polys.push_back(rp);
+                    dl->polys.push_back(yp);
+
+                    // Where each trace finally let the pedal go. Releasing
+                    // square and early is what produces understeer, and it is
+                    // invisible in peak pressure alone.
+                    if (ct.refRelease >= 0)
+                        dl->rect(fxOf(ct.refRelease), plotTop, 1, plotH,
+                                 kLine.r, kLine.g, kLine.b);
+                    if (ct.youRelease >= 0)
+                        dl->rect(fxOf(ct.youRelease), plotTop, 1, plotH,
+                                 kTurnMark.r, kTurnMark.g, kTurnMark.b);
+                }
+            }
+
             // --- backing panel for the bar and readout ------------------------
             // Emitted before the bar chrome so it sits behind it: the renderer
             // draws all rects in order, then polylines, discs and text.
-            dl->rect(0, viewH, W, barH + readoutH, kPanel.r, kPanel.g, kPanel.b);
+            dl->rect(0, bottomY, W, barH + readoutH, kPanel.r, kPanel.g, kPanel.b);
 
             // --- cross-track bar ----------------------------------------------
-            const int barY = viewH + 4;
+            const int barY = bottomY + 4;
             const int barMid = W / 2;
             const int barHalf = W / 2 - 12;
 
@@ -555,7 +650,7 @@ void ReflineOverlaySystem::tick(class ECS::World *world, float deltaTime)
             }
 
             // --- readout -------------------------------------------------------
-            const int textY = viewH + barH + 4;
+            const int textY = bottomY + barH + 4;
 
             // Positive cross-track means the car is right of the line, so the
             // correction is to move left. Beyond any plausible distance from

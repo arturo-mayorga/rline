@@ -1,9 +1,11 @@
 #ifndef overlay_comp_h_
 #define overlay_comp_h_
 
+#include "../corner-trace.h"
 #include "../ecs.h"
 #include "../grip-curve.h"
 #include "../refline.h"
+#include "../speech-queue.h"
 
 #include <memory>
 #include <string>
@@ -48,7 +50,11 @@ struct EgoStateComponent
         float brake = 0;
         float throttle = 0;
     };
-    static const int kHistory = 600; // 10 s at 60 Hz
+    // Long enough to hold the longest corner on the reference lap end to end,
+    // because the frozen trace is rebuilt from this buffer rather than
+    // accumulated live. Road America's longest span is ~820 m, which is over
+    // 25 s if the car is slow through it; 10 s would silently truncate it.
+    static const int kHistory = 2400; // 40 s at 60 Hz
     PedalSample hist[kHistory];
     int histCount = 0;
     int histHead = 0;
@@ -59,6 +65,33 @@ struct EgoStateComponent
         histHead = (histHead + 1) % kHistory;
         if (histCount < kHistory)
             ++histCount;
+    }
+
+    // The corner just completed, held until the next one finishes. The live
+    // trace above it scrolls past too quickly to read while cornering; this is
+    // what the driver actually glances at on the way out.
+    CornerTrace lastCorner;
+    CornerExitWatcher exitWatch;
+    std::vector<PedalPoint> scratch;
+
+    // Call once per sample, after pushHistory. Rebuilding from history rather
+    // than capturing live is what lets overlapping corners each be measured
+    // from their own entry.
+    void updateCornerTrace(const RefLine &line)
+    {
+        const int done = exitWatch.update(line, pct);
+        if (done < 0)
+            return;
+
+        scratch.clear();
+        scratch.reserve((size_t)histCount);
+        for (int k = 0; k < histCount; ++k)
+        {
+            const int i = (histHead - histCount + k + 2 * kHistory) % kHistory;
+            scratch.push_back(PedalPoint{hist[i].pct, hist[i].brake});
+        }
+        buildCornerTrace(line, done, scratch.data(), (int)scratch.size(),
+                         lastCorner);
     }
 };
 ECS_DEFINE_TYPE(EgoStateComponent);
@@ -88,6 +121,52 @@ struct CoachMessageComponent
 };
 ECS_DEFINE_TYPE(CoachMessageComponent);
 typedef std::shared_ptr<CoachMessageComponent> CoachMessageComponentSP;
+
+// Everything waiting to be said, in the order it will be said.
+//
+// CoachMessageComponent above is now only what is on *screen*. Anything that
+// wants to be heard goes in here instead, because two producers writing one
+// slot meant the second cut the first off mid-sentence - or overwrote it before
+// it was ever spoken. See src/speech-queue.h for the ordering rules.
+struct SpeechQueueComponent
+{
+    ECS_DECLARE_TYPE;
+
+    speech::Queue queue;
+};
+ECS_DEFINE_TYPE(SpeechQueueComponent);
+typedef std::shared_ptr<SpeechQueueComponent> SpeechQueueComponentSP;
+
+// The other direction: what the driver said, waiting to go up the wire.
+//
+// VoiceInputSystem fills this from the speech recogniser and
+// TelemetryStreamSystem drains it. They are decoupled through a component so
+// that recognition still works with the relay down - the queue simply drains
+// to nothing - and so neither system has to know the other exists.
+struct DriverSpeechComponent
+{
+    ECS_DECLARE_TYPE;
+
+    // Bounded: if the relay is disconnected while the driver keeps talking,
+    // the oldest utterances are dropped rather than growing without limit.
+    // Nothing said 30 seconds ago is worth a leak.
+    static const size_t kMaxPending = 16;
+
+    std::vector<std::string> pending; // complete HEAR| lines, oldest first
+
+    bool listening = false;    // button is down right now
+    std::string lastHeard;     // most recent utterance, for the overlay
+    float lastConfidence = 0;
+
+    // Binding happens in the overlay's move-window mode, where the driver
+    // already is when configuring things and where he has a screen to read.
+    // Asking him to run an exe with a flag would mean a command line on a rig
+    // that deliberately has no dev tools on it.
+    bool binding = false;      // waiting for him to press the button he wants
+    std::string buttonLabel;   // "0:7", or empty when nothing is bound yet
+};
+ECS_DEFINE_TYPE(DriverSpeechComponent);
+typedef std::shared_ptr<DriverSpeechComponent> DriverSpeechComponentSP;
 
 struct OverlayConfigComponent
 {

@@ -41,6 +41,7 @@ private:
     void closeSocket();
     bool tryConnect();
     bool sendAll(const char *data, int len);
+    bool sendText(const std::string &line);
     void buildChannelList();
     void pumpIncoming(class ECS::World *world);
 

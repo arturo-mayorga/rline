@@ -119,6 +119,42 @@ bool TelemetryStreamSystem::sendAll(const char *data, int len)
     return true;
 }
 
+bool TelemetryStreamSystem::sendText(const std::string &line)
+{
+    if (line.empty() || line.size() > wire::kMaxTextLen)
+        return true; // unsendable; report it consumed rather than retry forever
+
+    std::vector<char> pkt;
+    pkt.reserve(3 + line.size());
+    pkt.push_back((char)wire::kTextMarker);
+    const uint16_t len = (uint16_t)line.size();
+    const char *lp = (const char *)&len;
+    pkt.insert(pkt.end(), lp, lp + 2);
+    pkt.insert(pkt.end(), line.begin(), line.end());
+
+    // Not sendAll: a telemetry frame can be abandoned half-written because the
+    // reader resynchronises on the next marker, but a half-written *text* frame
+    // leaves a length field with telemetry behind it, and the reader would take
+    // that for speech. So either it all goes, or the connection does.
+    int sent = 0;
+    const int total = (int)pkt.size();
+    while (sent < total)
+    {
+        const int n = send(_sock, pkt.data() + sent, total - sent, 0);
+        if (n > 0)
+        {
+            sent += n;
+            continue;
+        }
+        if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK && sent == 0)
+            return false; // nothing left yet: keep it queued and try next tick
+
+        closeSocket();
+        return false;
+    }
+    return true;
+}
+
 void TelemetryStreamSystem::buildChannelList()
 {
     _varIdx.clear();
@@ -216,14 +252,13 @@ void TelemetryStreamSystem::pumpIncoming(class ECS::World *world)
 
             if (!text.empty())
             {
-                world->each<CoachMessageComponentSP>(
-                    [&](ECS::Entity *, ECS::ComponentHandle<CoachMessageComponentSP> mH)
-                    {
-                        CoachMessageComponent &m = *mH.get();
-                        m.text = text;
-                        m.ttl = secs;
-                        m.speakPending = true;
-                    });
+                // Queued, not spoken over the top of whatever is talking. A
+                // note from the relay is conversational - an answer, an
+                // observation - so it never goes stale and it yields to a
+                // corner cue that does.
+                world->each<SpeechQueueComponentSP>(
+                    [&](ECS::Entity *, ECS::ComponentHandle<SpeechQueueComponentSP> qH)
+                    { qH.get()->queue.push(text, speech::PriorityNote, 0.0f, secs); });
             }
         }
     }
@@ -280,6 +315,24 @@ void TelemetryStreamSystem::tick(class ECS::World *world, float deltaTime)
     }
 
     pumpIncoming(world);
+    if (_sock == INVALID_SOCKET)
+        return;
+
+    // Anything the driver said goes up ahead of the next telemetry frame, so a
+    // congested link delays his words by less than it delays data we can
+    // reconstruct anyway. Stops at the first failure and keeps the rest queued.
+    world->each<DriverSpeechComponentSP>(
+        [&](ECS::Entity *, ECS::ComponentHandle<DriverSpeechComponentSP> h)
+        {
+            DriverSpeechComponent &d = *h.get();
+            while (!d.pending.empty() && _sock != INVALID_SOCKET)
+            {
+                if (!sendText(d.pending.front()))
+                    break;
+                d.pending.erase(d.pending.begin());
+            }
+        });
+
     if (_sock == INVALID_SOCKET)
         return;
 

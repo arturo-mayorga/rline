@@ -46,25 +46,60 @@ void CoachSpeechSystem::unconfigure(class ECS::World *world)
         _voice->Speak(NULL, SPF_PURGEBEFORESPEAK, NULL);
 }
 
+bool CoachSpeechSystem::speaking() const
+{
+    if (!_voice)
+        return false;
+
+    SPVOICESTATUS st = {};
+    if (FAILED(_voice->GetStatus(&st, NULL)))
+        return false;
+
+    return (st.dwRunningState & SPRS_IS_SPEAKING) != 0;
+}
+
 void CoachSpeechSystem::tick(class ECS::World *world, float deltaTime)
 {
     if (!_voice)
         return;
 
-    world->each<CoachMessageComponentSP>(
-        [&](ECS::Entity *, ECS::ComponentHandle<CoachMessageComponentSP> mH)
+    world->each<SpeechQueueComponentSP>(
+        [&](ECS::Entity *ent, ECS::ComponentHandle<SpeechQueueComponentSP> qH)
         {
-            CoachMessageComponent &m = *mH.get();
-            if (!m.speakPending || m.text.empty())
+            speech::Queue &q = qH.get()->queue;
+
+            // Shelf lives run down whether or not anything is being said, so a
+            // corner cue that waited out a long note is dropped rather than
+            // delivered after its corner.
+            q.age(deltaTime);
+
+            // The fix for being cut off mid-sentence: wait for the engine to
+            // finish rather than purging it. This used to speak with
+            // SPF_PURGEBEFORESPEAK, so every new note - from either the corner
+            // coach or the relay - truncated whatever was already talking.
+            if (speaking())
                 return;
 
-            m.speakPending = false;
+            speech::Item item;
+            if (!q.pop(&item))
+                return;
 
-            const std::wstring w(m.text.begin(), m.text.end());
+            // The panel shows what is being said, as it is said, so the screen
+            // and the voice can never disagree.
+            ECS::ComponentHandle<CoachMessageComponentSP> mH =
+                ent->get<CoachMessageComponentSP>();
+            if (mH.isValid())
+            {
+                CoachMessageComponent &m = *mH.get();
+                m.text = item.text;
+                m.ttl = item.displaySecs;
+                m.speakPending = false;
+            }
 
-            // ASYNC so the loop continues immediately; PURGEBEFORESPEAK so a
-            // newer note replaces one still being read rather than queueing
-            // behind it.
-            _voice->Speak(w.c_str(), SPF_ASYNC | SPF_PURGEBEFORESPEAK, NULL);
+            const std::wstring w(item.text.begin(), item.text.end());
+
+            // ASYNC so the loop continues immediately. No PURGEBEFORESPEAK:
+            // nothing may interrupt a sentence in progress.
+            _voice->Speak(w.c_str(), SPF_ASYNC, NULL);
         });
 }

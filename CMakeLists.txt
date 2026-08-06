@@ -19,7 +19,11 @@ add_executable(rline
     src/refline.cpp
     src/event-cue.cpp
     src/corner-coach.cpp
+    src/corner-trace.cpp
     src/grip-curve.cpp
+    src/voice-line.cpp
+    src/talk-button.cpp
+    src/speech-queue.cpp
     src/components/rendering-comp.cpp
     src/systems/irtelemetry-sys.cpp
     src/systems/demo-telemetry-sys.cpp
@@ -29,6 +33,7 @@ add_executable(rline
     src/systems/telemetry-stream-sys.cpp
     src/systems/coach-speech-sys.cpp
     src/systems/corner-coach-sys.cpp
+    src/systems/voice-input-sys.cpp
     src/irsdk/irsdk_client.cpp
     src/irsdk/irsdk_utils.cpp
     src/irsdk/yaml_parser.cpp
@@ -48,6 +53,14 @@ add_custom_command(TARGET rline POST_BUILD
             "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv"
             "$<TARGET_FILE_DIR:rline>/lap.csv")
 
+# What each detected corner is called out loud. The detector's numbering is
+# not the track's, and speaking the wrong one sends the driver to the wrong
+# piece of road.
+add_custom_command(TARGET rline POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/corner-names.txt"
+            "$<TARGET_FILE_DIR:rline>/corner-names.txt")
+
 # ------------------------------------------------------------------- the tests
 #
 # The geometry, the lateral reconstruction, the overlay's draw output and the
@@ -64,8 +77,15 @@ add_executable(test-overlay
     tests/test-overlay.cpp
     src/refline.cpp
     src/grip-curve.cpp
+    src/corner-trace.cpp
     src/components/rendering-comp.cpp
     src/systems/refline-overlay-sys.cpp
+)
+
+add_executable(test-corner-trace
+    tests/test-corner-trace.cpp
+    src/corner-trace.cpp
+    src/refline.cpp
 )
 
 add_executable(test-lateral
@@ -93,6 +113,30 @@ add_executable(test-event-cue
     src/refline.cpp
 )
 
+# Recognition needs SAPI and only runs on the rig, but what a misrecognition is
+# allowed to put on the wire is checked everywhere.
+add_executable(test-voice-line
+    tests/test-voice-line.cpp
+    src/voice-line.cpp
+)
+
+add_executable(test-talk-button
+    tests/test-talk-button.cpp
+    src/talk-button.cpp
+)
+
+# Built and tested, but deliberately not yet loaded by rline - see the header.
+add_executable(test-voice-grammar
+    tests/test-voice-grammar.cpp
+    src/voice-grammar.cpp
+)
+
+# What the rig says, in what order, and what it refuses to say late.
+add_executable(test-speech-queue
+    tests/test-speech-queue.cpp
+    src/speech-queue.cpp
+)
+
 # ------------------------------------------------------------- the diagnostic
 #
 # Lists the channels a live session exposes and can capture them to CSV. Used to
@@ -102,6 +146,7 @@ add_executable(test-event-cue
 # machine, so it can be changed freely without touching the rig.
 add_executable(relay
     tools/relay.cpp
+    src/voice-line.cpp
 )
 target_link_libraries(relay ws2_32)
 
@@ -117,7 +162,7 @@ add_executable(irdump
 # Static CRT: every resulting exe runs on a clean Windows install with no
 # Visual C++ redistributable and no dev tools.
 if(MSVC)
-    foreach(t rline relay test-refline test-overlay test-lateral test-event-cue test-corner-coach test-grip-curve irdump)
+    foreach(t rline relay test-refline test-overlay test-corner-trace test-lateral test-event-cue test-corner-coach test-grip-curve test-voice-line test-talk-button test-voice-grammar test-speech-queue irdump)
         set_property(TARGET ${t} PROPERTY
                      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endforeach()
@@ -134,6 +179,14 @@ add_test(NAME grip-curve
          COMMAND test-grip-curve)
 add_test(NAME corner-coach
          COMMAND test-corner-coach "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv")
+add_test(NAME voice-line
+         COMMAND test-voice-line)
+add_test(NAME talk-button
+         COMMAND test-talk-button)
+add_test(NAME speech-queue
+         COMMAND test-speech-queue)
+add_test(NAME voice-grammar
+         COMMAND test-voice-grammar "${CMAKE_CURRENT_SOURCE_DIR}/data/voice-grammar.txt")
 add_test(NAME lateral
          COMMAND test-lateral "${CMAKE_CURRENT_SOURCE_DIR}/data/lap.csv"
                               "${CMAKE_CURRENT_SOURCE_DIR}/data/drive-roadamerica.csv")

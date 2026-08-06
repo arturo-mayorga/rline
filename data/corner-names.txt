@@ -1,0 +1,22 @@
+# What each detected corner is called out loud, one per line, in lap order.
+#
+# The corner detector numbers what it finds 1..N from start/finish. Those are
+# not the track's turn numbers - it does not see flat-out kinks at all, and on
+# this circuit it finds 11 corners across 16 numbered turns. Speaking its own
+# numbering sends the driver looking at the wrong piece of road.
+#
+# Anchored on the Carousel: the only corner the reference takes with no brake
+# at all. Everything else follows from its position in the lap.
+#
+# Blank or missing lines fall back to the detected number.
+Turn one
+Turn three
+Turn five
+Turn six
+Turn seven
+Turn eight
+Turn nine
+The carousel
+Turn twelve
+Turn thirteen
+Turn fourteen

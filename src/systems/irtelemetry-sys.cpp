@@ -74,6 +74,7 @@ void IrTelemetrySystem::tick(class ECS::World *world, float deltaTime)
             ego.latAccel = g_latAccel.getFloat();
             ego.grip.add(ego.steer, ego.latAccel, ego.speed);
             ego.pushHistory(ego.pct, ego.brake, ego.throttle);
+            ego.updateCornerTrace(line);
 
             const int lap = g_lap.getInt();
             const double now = g_sessionTime.getDouble();

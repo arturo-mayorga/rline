@@ -9,6 +9,7 @@
 //     src/corner-coach.cpp src/refline.cpp
 
 #include "../src/corner-coach.h"
+#include "../src/grip-curve.h"
 #include "../src/refline.h"
 
 #include <cstdio>
@@ -175,8 +176,90 @@ int main(int argc, char **argv)
         printf("       %d corners judged, %d clean, %d easier, %d trail, %d speed\n",
                t.total, t.good, t.easier, t.trail, t.speed);
         check(t.easier > 0, "over-pressure is diagnosed as too much brake");
-        check(t.easier >= t.trail,
-              "over-pressure is called before trail braking, not after");
+        check(t.trail == 0, "trail-brake-further is never said to this driver");
+    }
+
+    printf("\n-- dragging the brake past the reference's release --\n");
+    {
+        // The dominant fault: the same brake point, but pressure carried on
+        // well past where the reference let it go. This is what makes the
+        // front push, and before today it produced no cue at all.
+        std::vector<Sample> smeared;
+        for (const RefPoint &p : line.pts)
+            smeared.push_back({p.pct, p.speed, p.brake, p.throttle, 1.0f, p.steer});
+
+        auto within = [](float pct, float a, float b)
+        {
+            return (a <= b) ? (pct >= a && pct <= b) : (pct >= a || pct <= b);
+        };
+
+        // Everything identical to the reference except that the pedal is held
+        // on for another 40 m past where the reference let it go.
+        int dragged = 0;
+        for (const RefCorner &rc : line.corners)
+        {
+            if (rc.releasePct < 0)
+                continue;
+            ++dragged;
+            for (Sample &s : smeared)
+            {
+                float d = s.pct - rc.releasePct;
+                if (d < -0.5f)
+                    d += 1.0f;
+                const float m = d * line.length;
+                if (m > 0 && m < 40.0f && within(s.pct, rc.pctEntry, rc.pctExit))
+                    s.brake = std::max(s.brake, 0.5f);
+            }
+        }
+        printf("       %d corners given a late release\n", dragged);
+        int late = 0, total = 0;
+        CornerCoach cc;
+        GripCurve g;
+        for (int lap = 0; lap < 2; ++lap)
+            for (const Sample &s : smeared)
+            {
+                g.add(s.steer, 0, s.speed);
+                CornerVerdict v = cc.update(line, s.pct, s.speed, s.brake,
+                                            s.throttle, s.steer, g.peakSteer());
+                if (v.note.empty())
+                    continue;
+                ++total;
+                if (v.note.find("off the brake sooner") != std::string::npos)
+                    ++late;
+            }
+        printf("       %d notes, %d of them 'off the brake sooner'\n", total, late);
+        check(late > 0, "carrying the brake past the reference is diagnosed");
+    }
+
+    printf("\n-- warnings are about the corner ahead --\n");
+    {
+        // A note about the corner just finished can only be filed away; the
+        // point of remembering each corner's fault is to warn before arrival.
+        std::vector<Sample> bad;
+        for (const RefPoint &p : line.pts)
+            bad.push_back({p.pct, p.speed * 0.9f, p.brake > 0.05f ? 1.0f : 0.0f,
+                           p.throttle, 1.0f, p.steer});
+        CornerCoach cc;
+        GripCurve g;
+        int ahead = 0, behind = 0, dupes = 0;
+        std::string prev;
+        for (int lap = 0; lap < 3; ++lap)
+            for (const Sample &s : bad)
+            {
+                g.add(s.steer, 0, s.speed);
+                CornerVerdict v = cc.update(line, s.pct, s.speed, s.brake,
+                                            s.throttle, s.steer, g.peakSteer());
+                if (v.note.empty())
+                    continue;
+                if (v.ahead) ++ahead; else ++behind;
+                if (v.note == prev) ++dupes;
+                prev = v.note;
+            }
+        printf("       %d ahead, %d retrospective, %d repeated back to back\n",
+               ahead, behind, dupes);
+        check(ahead > 0, "the coach warns about corners still to come");
+        check(ahead > behind, "warnings outnumber post-mortems once a lap is known");
+        check(dupes == 0, "the same note is never said twice running");
     }
 
     if (argc > 2)

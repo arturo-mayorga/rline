@@ -13,10 +13,12 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <string>
 #include <vector>
 
+#include "../src/voice-line.h"
 #include "../src/wire.h"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -65,6 +67,28 @@ namespace
     {
         for (size_t i = 0; i < v.size(); ++i)
             fprintf(f, "%.6g%s", v[i], i + 1 < v.size() ? "," : "\n");
+    }
+
+    std::string stamp()
+    {
+        const time_t t = time(NULL);
+        char buf[32] = {};
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", localtime(&t));
+        return std::string(buf);
+    }
+
+    // What the driver said, appended for the coaching side to pick up. This is
+    // the mirror of outbox.txt going the other way, with one difference: it is
+    // never truncated. A note to the driver is consumed once; a thing he said
+    // is a record, and the transcript of a session is worth keeping.
+    void appendHeard(const std::string &line)
+    {
+        const std::string path = g_dir + "\\inbox.txt";
+        FILE *f = fopen(path.c_str(), "a");
+        if (!f)
+            return;
+        fprintf(f, "%s %s\n", stamp().c_str(), line.c_str());
+        fclose(f);
     }
 }
 
@@ -184,6 +208,40 @@ int main(int argc, char **argv)
             uint8_t marker = 0;
             if (!recvAll(s, (char *)&marker, 1))
                 break;
+
+            // Recognised speech, interleaved with the telemetry.
+            if (marker == wire::kTextMarker)
+            {
+                uint16_t tlen = 0;
+                if (!recvAll(s, (char *)&tlen, 2))
+                    break;
+                if (tlen == 0 || tlen > wire::kMaxTextLen)
+                {
+                    // The stream is no longer trustworthy: we cannot know how
+                    // many bytes to skip, so resynchronising would be guessing.
+                    printf("relay: bogus text length %u, dropping the connection\n",
+                           (unsigned)tlen);
+                    break;
+                }
+
+                std::string text(tlen, '\0');
+                if (!recvAll(s, &text[0], tlen))
+                    break;
+
+                std::string said;
+                float conf = 0;
+                if (voice::parseLine(text, &said, &conf))
+                {
+                    printf("relay: <- heard (%.0f%%) %s\n", conf * 100.0f, said.c_str());
+                    appendHeard(text);
+                }
+                else
+                {
+                    printf("relay: <- unparseable text frame, ignored\n");
+                }
+                continue;
+            }
+
             if (marker != wire::kFrameMarker)
                 continue; // resynchronise
 

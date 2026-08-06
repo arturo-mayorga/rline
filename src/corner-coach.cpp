@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 
 namespace
 {
@@ -25,85 +26,131 @@ namespace
             return pct >= a && pct <= b;
         return pct >= a || pct <= b; // wraps past start/finish
     }
+
+    // Signed metres from b to a, taking the short way round the lap.
+    float gapM(float a, float b, float length)
+    {
+        float d = a - b;
+        if (d > 0.5f)
+            d -= 1.0f;
+        if (d < -0.5f)
+            d += 1.0f;
+        return d * length;
+    }
 }
 
 void CornerCoach::reset()
 {
-    _corner = -1;
-    _vmin = 0;
-    _pastTurnIn = false;
-    _peakBrake = 0;
-    _peakSteer = 0;
-    _releasePct = -1;
+    _acc.clear();
+    _learnedPeak = -1;
     _lastPct = -1;
+    // _lastFault deliberately survives: what a corner did to him last lap is
+    // still true after a tow or a reset to pits.
 }
 
-CornerVerdict CornerCoach::judge(const RefLine &line, int idx) const
+int CornerCoach::currentCorner() const
+{
+    for (size_t i = 0; i < _acc.size(); ++i)
+        if (_acc[i].active)
+            return (int)i;
+    return -1;
+}
+
+std::string CornerCoach::nameOf(const RefLine &line, int idx) const
+{
+    if (idx >= 0 && idx < (int)names.size() && !names[idx].empty())
+        return names[idx];
+    return std::string("Turn ") + ordinal(line.corners[idx].n);
+}
+
+bool CornerCoach::loadNames(const std::string &path)
+{
+    std::ifstream f(path.c_str());
+    if (!f)
+        return false;
+
+    names.clear();
+    std::string ln;
+    while (std::getline(f, ln))
+    {
+        while (!ln.empty() && (ln.back() == '\r' || ln.back() == ' '))
+            ln.pop_back();
+        if (ln.empty() || ln[0] == '#')
+            continue;
+        names.push_back(ln);
+    }
+    return true;
+}
+
+int CornerCoach::nextActionable(const RefLine &line, float pct, int from) const
+{
+    // Spans overlap, so the corner after this one may already be under way -
+    // warning about a corner already being driven is worse than saying
+    // nothing. Take the first one still entirely ahead.
+    const int n = (int)line.corners.size();
+    for (int k = 1; k <= n; ++k)
+    {
+        const int j = (from + k) % n;
+        if (!inSpan(pct, line.corners[j].pctEntry, line.corners[j].pctExit))
+            return j;
+    }
+    return -1;
+}
+
+std::string CornerCoach::fault(const RefLine &line, int idx) const
 {
     const RefCorner &rc = line.corners[idx];
-    CornerVerdict v;
-    v.corner = rc.n;
+    const Acc &a = _acc[idx];
 
-    char buf[160];
-
-    // Too much brake pressure comes first: telling a driver who is already at
-    // maximum pressure to brake for longer just makes them slower.
-    if (rc.peakBrake > 0.05f && _peakBrake > rc.peakBrake + brakeOverPressure)
+    // 1. Dragging the brake past where the reference released it. Checked
+    //    first because it is the cause and the rest are symptoms: pressure
+    //    still on at turn-in is what makes the front push and the rear light.
+    if (a.releasePct >= 0 && rc.releasePct >= 0)
     {
-        snprintf(buf, sizeof(buf), "Turn %s, easier on the brake", ordinal(rc.n));
-        v.note = buf;
-        return v;
+        if (gapM(a.releasePct, rc.releasePct, line.length) > releaseLateM)
+            return "off the brake sooner";
     }
 
-    if (_releasePct >= 0 && rc.releasePct >= 0)
+    // 2. Too much pressure, which produces overslowing. Telling a driver
+    //    already at maximum pressure to brake longer just makes them slower.
+    if (rc.peakBrake > 0.05f && a.peakBrake > rc.peakBrake + brakeOverPressure)
+        return "easier on the brake";
+
+    // 3. Past the driver's own measured grip peak the wheel has stopped
+    //    working, so the instruction is to unwind - not to find more speed and
+    //    not to compare against someone else's steering trace.
+    if (_learnedPeak > 0.05f && a.peakSteer > _learnedPeak)
+        return "too much lock, unwind";
+
+    // 4. A plain speed deficit, and only once the wheel is known to be inside
+    //    the grip peak. Asking for more speed while the front is already
+    //    saturated is the advice that has made this driver slower before.
+    if (rc.vmin > 1.0f && a.pastTurnIn && a.vmin < 1e8f &&
+        a.vmin < rc.vmin - vminDeficitMs)
     {
-        float d = (_releasePct - rc.releasePct);
-        if (d < -0.5f)
-            d += 1.0f;
-        const float metres = d * line.length;
-        if (metres < -releaseEarlyM)
-        {
-            snprintf(buf, sizeof(buf), "Turn %s, trail the brake in further",
-                     ordinal(rc.n));
-            v.note = buf;
-            return v;
-        }
+        if (rc.peakSteer > 0.05f && a.peakSteer > rc.peakSteer * steerExcess)
+            return "turn in earlier";
+        return "room for more speed";
     }
 
-    // Slow through a corner is a symptom, not an instruction. If it comes with
-    // more lock than the reference needed, the car is understeering, and
-    // telling a driver already at the limit of front grip to carry more speed
-    // just asks for more of what is not working.
-    if (rc.vmin > 1.0f && _pastTurnIn && _vmin < 1e8f && _vmin < rc.vmin - vminDeficitMs)
-    {
-        // Past the driver's own measured grip peak the wheel has stopped
-        // working, so the instruction is to unwind - not to find more speed
-        // and not to compare against someone else's steering trace.
-        if (_learnedPeak > 0.05f && _peakSteer > _learnedPeak)
-            snprintf(buf, sizeof(buf), "Turn %s, too much lock, unwind to make it turn",
-                     ordinal(rc.n));
-        else if (rc.peakSteer > 0.05f && _peakSteer > rc.peakSteer * steerExcess)
-            snprintf(buf, sizeof(buf), "Turn %s, understeer, get it rotated on entry",
-                     ordinal(rc.n));
-        else
-            snprintf(buf, sizeof(buf), "Turn %s, room for more speed, %.0f down",
-                     ordinal(rc.n), (rc.vmin - _vmin) * 3.6f);
-        v.note = buf;
-        return v;
-    }
-
-    v.good = true;
-    return v;
+    return std::string();
 }
 
 CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
                                   float brake, float throttle, float steer,
                                   float learnedPeakSteer)
 {
+    (void)throttle;
     CornerVerdict none;
 
     if (line.corners.empty())
         return none;
+
+    if (_acc.size() != line.corners.size())
+    {
+        _acc.assign(line.corners.size(), Acc());
+        _lastFault.assign(line.corners.size(), std::string());
+    }
 
     // A jump in track position means a tow, a reset or a new lap; whatever was
     // being measured is no longer a corner the driver drove.
@@ -114,57 +161,91 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
             d += 1.0f;
         if (d < 0 || d > 0.02f)
         {
-            const int was = _corner;
-            reset();
+            _acc.assign(line.corners.size(), Acc());
             _lastPct = pct;
-            if (was >= 0)
-                return none;
+            _learnedPeak = learnedPeakSteer;
+            return none;
         }
     }
     _lastPct = pct;
     _learnedPeak = learnedPeakSteer;
 
-    if (_corner < 0)
+    // Every corner whose span covers this sample accumulates, so overlapping
+    // corners are each measured over the whole of their own span.
+    int finished = -1;
+    for (size_t i = 0; i < line.corners.size(); ++i)
     {
-        for (size_t i = 0; i < line.corners.size(); ++i)
+        const RefCorner &rc = line.corners[i];
+        Acc &a = _acc[i];
+
+        if (inSpan(pct, rc.pctEntry, rc.pctExit))
         {
-            if (inSpan(pct, line.corners[i].pctEntry, line.corners[i].pctExit))
+            if (!a.active)
             {
-                _corner = (int)i;
-                _pastTurnIn = inSpan(pct, line.corners[i].pctTurnIn,
-                                     line.corners[i].pctExit);
-                _vmin = _pastTurnIn ? speed : 1e9f;
-                _peakBrake = brake;
-                _peakSteer = fabsf(steer);
-                _releasePct = (brake > kBrakeOn) ? pct : -1.0f;
-                return none;
+                a = Acc();
+                a.active = true;
+                a.vmin = 1e9f;
             }
+            // Brake pressure is judged over the whole approach, but speed only
+            // from turn-in - otherwise the previous corner's minimum leaks in.
+            if (!a.pastTurnIn && inSpan(pct, rc.pctTurnIn, rc.pctExit))
+                a.pastTurnIn = true;
+            if (a.pastTurnIn)
+                a.vmin = std::min(a.vmin, speed);
+            a.peakBrake = std::max(a.peakBrake, brake);
+            a.peakSteer = std::max(a.peakSteer, fabsf(steer));
+            if (brake > kBrakeOn)
+                a.releasePct = pct;
         }
-        return none;
+        else if (a.active)
+        {
+            // Only one verdict can be spoken per tick; the first corner to
+            // close is the one just driven out of.
+            if (finished < 0)
+                finished = (int)i;
+            a.active = false;
+        }
     }
 
-    const RefCorner &rc = line.corners[_corner];
+    if (finished < 0)
+        return none;
 
-    if (inSpan(pct, rc.pctEntry, rc.pctExit))
+    const std::string f = fault(line, finished);
+    _lastFault[finished] = f;
+    _acc[finished] = Acc();
+
+    char buf[192];
+
+    // Warn about what is coming, using what that corner did to him last time.
+    const int j = nextActionable(line, pct, finished);
+    if (j >= 0 && !_lastFault[j].empty())
     {
-        // Brake pressure is judged over the whole approach, but speed only
-        // from turn-in - otherwise the previous corner's minimum leaks in.
-        if (!_pastTurnIn && inSpan(pct, rc.pctTurnIn, rc.pctExit))
-            _pastTurnIn = true;
-        if (_pastTurnIn)
-            _vmin = std::min(_vmin, speed);
-        _peakBrake = std::max(_peakBrake, brake);
-        _peakSteer = std::max(_peakSteer, fabsf(steer));
-        if (brake > kBrakeOn)
-            _releasePct = pct;
-        return none;
+        CornerVerdict v;
+        v.corner = line.corners[j].n;
+        v.ahead = true;
+        snprintf(buf, sizeof(buf), "%s next, %s",
+                 nameOf(line, j).c_str(), _lastFault[j].c_str());
+        v.note = buf;
+        // Two corners closing in quick succession can both point at the same
+        // one ahead. Hearing it twice reads as a stutter, not as emphasis.
+        if (v.note == _lastSpoken)
+            return none;
+        _lastSpoken = v.note;
+        return v;
     }
 
-    // Left the corner: judge it now, while it still means something.
-    const CornerVerdict v = judge(line, _corner);
-    const int done = _corner;
-    reset();
-    _lastPct = pct;
-    (void)done;
+    // Nothing known about the corner ahead yet - first lap, or it was clean.
+    CornerVerdict v;
+    v.corner = line.corners[finished].n;
+    if (f.empty())
+    {
+        v.good = true;
+        return v;
+    }
+    snprintf(buf, sizeof(buf), "%s, %s", nameOf(line, finished).c_str(), f.c_str());
+    v.note = buf;
+    if (v.note == _lastSpoken)
+        return none;
+    _lastSpoken = v.note;
     return v;
 }

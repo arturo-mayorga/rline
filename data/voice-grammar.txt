@@ -1,0 +1,66 @@
+# What the driver can say and have recognised exactly.
+#
+# One phrase per line. Blank lines and lines starting with '#' are ignored.
+#
+# This exists because free dictation does badly on precisely the utterances
+# that matter here. Measured on the rig on 2026-08-05: a long sentence came
+# back at 44% confidence and roughly right, while "hate all factory" and
+# "her as" - both short phrases - came back at 56% and 36% and were nonsense.
+# Dictation leans on sentence context and a three-word phrase gives it none,
+# but a three-word phrase under load is exactly what gets said while driving.
+#
+# A rule grammar searches only these lines instead of the whole language, so a
+# match is near-certain even with a helmet on and an engine running. Dictation
+# still runs underneath for anything not listed, tagged as low confidence.
+#
+# Read at startup and copied beside the exe by CMake, so the vocabulary can be
+# changed here without rebuilding or reinstalling anything on the rig - the
+# same arrangement as corner-names.txt.
+
+# Marking a moment. The most valuable thing he can say: it timestamps where he
+# felt something wrong, so the telemetry can be read at that exact point.
+mark
+mark that
+
+# What the car did. These map onto the two failure modes already in the model.
+understeer
+oversteer
+i lost the front
+i lost the rear
+the front pushed
+the rear stepped out
+
+# Whether the last change helped. Confirming a fix held is half the method.
+that was better
+that was worse
+that felt good
+that felt bad
+no difference
+
+# Traffic and mistakes, so a bad lap can be discounted rather than analysed.
+traffic
+my mistake
+i went off
+ignore that lap
+
+# Talking to the coach.
+say again
+repeat that
+stop coaching
+start coaching
+quiet please
+what was that lap
+
+# Corners, in the driver's own numbering. These must match corner-names.txt -
+# speaking the detector's numbering sends him to the wrong piece of road.
+turn one
+turn three
+turn five
+turn six
+turn seven
+turn eight
+turn nine
+the carousel
+turn twelve
+turn thirteen
+turn fourteen

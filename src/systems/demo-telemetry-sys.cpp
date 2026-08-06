@@ -59,6 +59,13 @@ void DemoTelemetrySystem::tick(class ECS::World *world, float deltaTime)
 
             ego.pct = a.pct;
             ego.speed = a.speed;
+            // Replay the reference's own pedals so the traces have something to
+            // draw without iRacing running.
+            ego.brake = a.brake;
+            ego.throttle = a.throttle;
+            ego.steer = a.steer;
+            ego.pushHistory(ego.pct, ego.brake, ego.throttle);
+            ego.updateCornerTrace(line);
             ego.lateral = offset;
             ego.x = a.x + offset * dy; // + is right of travel
             ego.y = a.y - offset * dx;
