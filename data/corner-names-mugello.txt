@@ -1,0 +1,44 @@
+# What each detected corner is called out loud, one per line, in lap order.
+# MUGELLO. Deploy as corner-names.txt beside the exe, alongside the Mugello
+# reference lap deployed as lap.csv. Road America's mapping is corner-names.txt.
+#
+# The detector finds SIX corners across fifteen numbered turns here - far
+# coarser than Road America's eleven of sixteen, because most of Mugello is
+# fast enough that the detector never sees a corner at all. Every name below
+# therefore stands for a stretch of road, not a single turn. What each one
+# swallows is written next to it; say the name, never the number.
+#
+# Anchors, both ends of the range:
+#   detected 1 is the only corner braked at 0.95 - San Donato, the slowest
+#   detected 3 is the only corner with essentially no brake (0.13) - and it
+#     covers the whole flat-out block from Casanova to Arrabbiata 2
+#
+# SAPI is an English voice. If Correntaio, Scarperia or Bucine come out
+# mangled, swap in the phonetic spellings on the right and redeploy:
+#   Scarperia   -> Scar peh ree a
+#   Correntaio  -> Cor ren tie oh
+#   Bucine      -> Boo chee nay
+#   Materassi   -> Mata rassi
+
+San Donato
+Materassi
+Casanova
+Scarperia
+Correntaio
+Bucine
+
+# detected  turn-in  apex   vmin  peakBrk  covers
+#    1        647 m   734 m  129    0.95   T1 San Donato, T2 Luco, T3 Poggio Secco
+#    2       1419 m  1624 m  196    0.40   T4 Materassi, T5 Borgo San Lorenzo
+#    3       1868 m  1972 m  229    0.13   T6 Casanova, T7 Savelli, T8+T9 Arrabbiata
+#    4       2969 m  3031 m  147    0.88   T10 Scarperia, T11 Palagio
+#    5       3494 m  3617 m  133    0.78   T12 Correntaio, T13+T14 Biondetti
+#    6       4344 m  4479 m  153    0.81   T15 Bucine
+#
+# Detected 2 is the one imperfect name: the braking and turn-in are Materassi,
+# but the apex and the minimum speed land at Borgo San Lorenzo. It is named for
+# the braking because the brake release is what this driver is cued on.
+#
+# Detected 3 is the dangerous one. Its span runs 0.298-0.531 - a quarter of the
+# lap, all of it aero-limited and taken at 250+ km/h on a trace of brake. Any
+# cue derived from it is a cue about four different corners at once.

@@ -157,8 +157,16 @@ the minimum over the whole span, so a corner picks up its neighbour's minimum;
 that is why adjacent corners print identical values. The trustworthy per-corner
 figures are `RefCorner::vmin`, measured from turn-in.
 
-`data/lap.csv` is the reference lap (100.0 s, 6413 m, 11 detected corners).
-Captured laps land in `/mnt/c/rline-coach/laps/lap-NNNN.csv`.
+Reference laps live in `data/`. Captured laps land in
+`/mnt/c/rline-coach/laps/lap-NNNN.csv`.
+
+| reference | track | lap | length | detected corners |
+|---|---|---|---|---|
+| `data/lap.csv` | Road America | 100.0 s | 6413 m | 11 of 16 turns |
+| `data/muguello-ref.csv` | **Mugello — this week** | 83.63 s | 5189 m | 6 of 15 turns |
+
+(The Mugello filename is misspelled as committed. Left alone rather than
+renamed mid-week; nothing references it by name yet except these notes.)
 
 **Check whether the archiver is already running before starting one** — it is
 left running deliberately between sessions, so it protects laps even when
@@ -202,19 +210,101 @@ distance. Never quote the lap time of a spliced file.
 ## Corner numbering — read this before speaking a single corner number
 
 The detector numbers what it finds 1..N from start/finish. **Those are not the
-track's turn numbers.** It finds 11 corners across 16 numbered turns here and
-does not see flat-out kinks at all. An entire session was coached using detector
-numbers, sending the driver to the wrong piece of road every time.
+track's turn numbers.** It finds 11 corners across 16 numbered turns at Road
+America, 6 across 15 at Mugello, and does not see flat-out kinks at all. An
+entire session was coached using detector numbers, sending the driver to the
+wrong piece of road every time.
 
 `data/corner-names.txt` holds the mapping, is copied next to the exe by CMake,
 and is read at startup by `CornerCoach::loadNames`. The rig speaks those names.
 When the reference lap changes, redo the mapping.
 
-The anchor is **the Carousel: the only corner the reference takes with no brake
-at all** (`RefCorner::releasePct < 0`). Everything else follows from its place in
-the lap. Cross-check by asking him which corners are grip-limited: the ones he
-names must be the detected corners with low vmin and high peak steer, and the
-leftovers must be the fastest with the least lock.
+`data/corner-names-mugello.txt` is the Mugello mapping. **Deploy the one that
+matches the reference lap on the rig**, renamed to `corner-names.txt` — the rig
+reads that filename and nothing else.
+
+Rebuild the table for any new reference with `tools/dump-corners.cpp` rather
+than working it out by hand; it prints the `RefCorner` fields the mapping turns
+on, flags the no-brake anchor, and lists the overlapping spans:
+
+```bash
+g++ -std=c++17 -O2 -o /tmp/dump-corners tools/dump-corners.cpp src/refline.cpp
+/tmp/dump-corners data/muguello-ref.csv
+```
+
+4 of 6 Mugello spans overlap their predecessor (8 of 11 at Road America), so
+the same rule applies: anything measuring per corner must keep every corner
+live at once.
+
+### Mugello — the mapping for this week
+
+Six detected corners across fifteen numbered turns. Every one stands for a
+stretch of road, not a turn, so each name below is also a warning about what it
+swallows. Anchored at both ends: detected 1 is the only corner braked at 0.95
+(San Donato, the slowest); detected 3 is the only one with essentially no brake.
+
+| detected | turn-in | apex | ref vmin | peak brk | spoken name | actually covers |
+|---|---|---|---|---|---|---|
+| 1 | 647 m | 734 m | 129 | 0.95 | San Donato | T1, T2 Luco, T3 Poggio Secco |
+| 2 | 1419 m | 1624 m | 196 | 0.40 | Materassi | T4, T5 Borgo San Lorenzo |
+| 3 | 1868 m | 1972 m | 229 | 0.13 | Casanova | T6, T7 Savelli, **T8+T9 Arrabbiata** |
+| 4 | 2969 m | 3031 m | 147 | 0.88 | Scarperia | T10, T11 Palagio |
+| 5 | 3494 m | 3617 m | 133 | 0.78 | Correntaio | T12, T13+T14 Biondetti |
+| 6 | 4344 m | 4479 m | 153 | 0.81 | Bucine | T15 |
+
+Detected 2 is named for its braking (Materassi) while its apex and minimum land
+at Borgo San Lorenzo — the brake release is what he is cued on, so the entry
+wins the name. Detected 3 spans a **quarter of the lap** (pct 0.298–0.531), all
+of it flat-out; see the grip section below before letting any cue out of it.
+
+### Not all corners here are grip-limited — this inverts the Road America check
+
+At Road America the cross-check was: the corners he calls grip-limited must be
+the detected ones with low vmin and high peak steer. **That check is wrong in
+this car.** Lateral load here rises with *speed*, not with lock. Sustained
+lateral g (p90, so kerb spikes are excluded) against peak steering angle:
+
+| turn | vmin | lat g | peak steer | taken |
+|---|---|---|---|---|
+| T1 San Donato | 129 | 3.00 | 1.14 | brake 0.95 |
+| T4 Materassi | 196 | **4.09** | 0.98 | brake 0.40 |
+| T6 Casanova | 229 | **3.93** | 1.15 | brake 0.13 |
+| T7 Savelli | 240 | **3.96** | 0.93 | brake 0.06 |
+| T8 Arrabbiata 1 | 251 | **4.21** | 0.88 | lift only |
+| T9 Arrabbiata 2 | 254 | **4.02** | 0.99 | lift only |
+| T10 Scarperia | 147 | 3.20 | 1.26 | brake 0.88 |
+| T12 Correntaio | 133 | 3.17 | 1.32 | brake 0.78 |
+| T13/T14 Biondetti | 220 | 3.15 | 0.54 | **flat, no lift** |
+| T15 Bucine | 153 | 3.27 | 0.87 | brake 0.81 |
+
+Three classes, and they want different coaching:
+
+1. **Mechanically limited** — T1, T10, T12, T15. Slow, ~3.0–3.3 g, the *most*
+   lock on the lap. This is where his known fault lives and where the brake
+   release cue works. All four are detected corners 1, 4, 5, 6.
+2. **Aero-limited** — T4, T6, T7, T8, T9. Fast, **3.9–4.2 g**, and only
+   0.88–1.15 rad of lock because at 250 km/h the wing is doing the work.
+   Nothing to fix with the brake. Commitment and line, not entry speed.
+3. **Not limited at all** — T13, T14 flat with no lift, T3 and T11 close to it.
+   Nothing to coach.
+
+**The live hazard:** `GripCurve` indexes on steering *angle* and his peak is
+1.5 rad. Arrabbiata 1 is 0.88 rad — it reads as **0% past peak**, so the
+`room for more speed` cue in `CornerCoach` will fire on a corner already pulling
+4.2 g at 251 km/h taken flat. That is the "carry more speed" family that has
+made him slower every time it has been said. It is open thread 1, and Mugello
+turns it from a Carousel-shaped edge case into a quarter of the lap. **Decide
+what to do about this before the next stint** — the cheapest safe answer is to
+suppress the speed-deficit cue on detected corner 3 entirely.
+
+Cross-check the mapping by asking which corners he has to *brake* for, not
+which are grip-limited. The answer must be San Donato, Scarperia, Correntaio
+and Bucine, and nothing between Materassi and Scarperia.
+
+### Road America — the previous mapping
+
+The anchor there is **the Carousel: the only corner the reference takes with no
+brake at all** (`RefCorner::releasePct < 0`).
 
 | detected | metres | ref vmin | his turn |
 |---|---|---|---|
@@ -310,6 +400,35 @@ Tell the driver to copy **the whole `C:\Users\amayorga\rline-dist` folder** and
 restart — it now carries `corner-names.txt` as well as `lap.csv`, and without it
 the rig speaks detector numbering again.
 
+### Switching the rig to a different track
+
+The track is not a setting. `main.cpp` defaults to `lap.csv` beside the exe and
+`corner-coach-sys.cpp` hard-codes `corner-names.txt`; CMake copies `data/lap.csv`
+and `data/corner-names.txt` into the build directory. So a track change is a
+**file swap plus a redeploy**, and both files must move together — a Mugello
+reference with Road America names speaks the wrong corner at every single one.
+
+Not done yet as of 2026-08-09. What Mugello needs, in order:
+
+1. **Swap the two data files.** Ship `data/muguello-ref.csv` as `lap.csv` and
+   `data/corner-names-mugello.txt` as `corner-names.txt`. Cleanest is a CMake
+   variable (`-DRLINE_TRACK=mugello`) picking the pair, so Road America stays
+   one flag away and the tests keep pointing at `data/lap.csv`.
+2. **`tools/quick.py` will report nonsense.** Its `CORNERS` table is eleven
+   hard-coded Road America spans. At Mugello every span lands on the wrong
+   piece of road, and this is the tool used *while he is driving*. Either
+   replace the table or make it read the reference. Highest-priority item here.
+3. **`tools/analyze.py`** — `REF_DEFAULT` is an absolute path to
+   `data/lap.csv`. Pass `--ref data/muguello-ref.csv` every time, or change it.
+4. **`tools/lap-qc.py`** — `REFERENCE_S = 100.0` gives a 150 s slow threshold
+   against an 84 s lap, so a 140 s in-lap passes as clean. Set it to 84.
+5. **Decide the `room for more speed` suppression** on detected corner 3 — see
+   the grip section. This one is a driving risk, not a tooling annoyance.
+
+`lap-qc.py` itself works unchanged on captured laps: the rig sends all 281
+channels including `SessionTime` and `P2P_Status`. It is only the *reference*
+exports that lack them, and those are never run through it.
+
 `./test.sh` runs six portable suites on Linux — no Windows SDK, no iRacing.
 `test-corner-coach` covers what the rig says out loud, including assertions that
 the two harmful cues can never come back.
@@ -382,7 +501,41 @@ Whether `data/lap.csv` itself used P2P is **unknown**: it is a different export
 format with Lat/Lon and no P2P channels at all, so the 100.0 s target may or may
 not be boost-assisted. Worth resolving before treating it as a fair target.
 
-Next levers, in order, as of the end of 2026-08-05:
+**`data/muguello-ref.csv` is clean, and that was established without a P2P
+channel** — the same method settles `lap.csv` if anyone wants it. The file has
+no `P2P_Status`, so `lap-qc.py` cannot read it, but the physics answer it:
+
+- 60.08 Hz confirmed by integrating GPS distance against `Speed` (16.645 ms per
+  sample, p05 16.51 / p95 16.78). 5021 rows, 83.63 s, 5189 m.
+- A genuine flying lap, not a splice or an out-lap: `LapDistPct` is monotonic
+  0.00050 → 0.99990 with the only reversal being the final wrap, and speed is
+  continuous across start/finish (79.45 → 79.39 m/s).
+- **No boost.** The main straight is one continuous 16.4 s wide-open pull from
+  177 to 299 km/h across start/finish, and its acceleration decays smoothly and
+  monotonically the whole way — 7.6 → 5.0 → 2.1 → 1.1 → 0.36 m/s². A P2P
+  activation puts a step in that curve. Comparing acceleration at matched
+  gear/RPM bins across all nine wide-open stretches, no straight is
+  systematically stronger than any other.
+- The two +2 m/s² jumps that scan does find (pct 0.226 and 0.323) are corner
+  exits where lateral load unwinds and the traction budget frees up. Look for
+  boost on a straight at constant gear, never right after an apex.
+
+So the 83.63 s is a fair target. Unverifiable from the file: whether the car
+even has P2P, and track limits — there is no `IsOnTrack` channel in this format.
+
+**2026-08-09: the track changed to Mugello for the week.** Everything below is
+Road America and is paused, not discarded. What transfers is the *fault* — the
+long-and-light brake release — because it travels between circuits; that is the
+whole reason track-independent cues are preferred. What does not transfer is
+every corner name, every reference number, and the grip heuristic. Do not open
+a Mugello stint by quoting a Road America corner.
+
+The Mugello equivalents of "T14 is the only corner still clearly down" cannot be
+written until he has run laps there. The four mechanically-limited corners
+(San Donato, Scarperia, Correntaio, Bucine) are where the release cue applies
+and are the place to start looking.
+
+Next levers at Road America, in order, as of the end of 2026-08-05:
 
 1. **T14 is the only corner still clearly down** — 145–148 against a 159
    reference across the whole evening. It is also the most delicate: it is where
@@ -400,13 +553,22 @@ Next levers, in order, as of the end of 2026-08-05:
 
 ## Open threads
 
-1. **Sustained-load grip is invisible to the current model, and it caused a bad
-   call.** `GripCurve` indexes on steering *angle*, so the Carousel — long, fast,
-   heavily loaded at only 0.62 rad — reads as "0% past peak" and looks like an
-   uncommitted lift. It was nearly coached as "carry more speed" before he said
-   the Carousel is grip-limited. The `room for more speed` cue in `CornerCoach`
-   has the same blind spot. Needs a lateral-G-over-time measure, not an angle
-   threshold.
+1. **Sustained-load grip is invisible to the current model, and Mugello makes
+   it urgent.** `GripCurve` indexes on steering *angle*, so the Carousel — long,
+   fast, heavily loaded at only 0.62 rad — reads as "0% past peak" and looks
+   like an uncommitted lift. It was nearly coached as "carry more speed" before
+   he said the Carousel is grip-limited. The `room for more speed` cue in
+   `CornerCoach` has the same blind spot. Needs a lateral-G-over-time measure,
+   not an angle threshold.
+
+   **At Road America this was one corner. At Mugello it is a quarter of the
+   lap.** He flagged on 2026-08-09 that not all corners in this car are
+   grip-limited, and the data agrees emphatically: the five fastest turns
+   (Materassi through Arrabbiata 2) pull 3.9–4.2 g on 0.88–1.15 rad of lock and
+   a trace of brake, while the four slow ones pull only 3.0–3.3 g on 1.14–1.32
+   rad. Load tracks speed, not angle. All five aero-limited turns sit inside
+   detected corner 3, so a single blind cue covers all of them. Until the
+   lateral-G measure exists, suppress the speed-deficit cue on that corner.
 2. The frozen brake panel is built and deployed, but **his remaining time is not
    in the brake trace** — T1 is pressure, the Carousel is sustained load. A
    second lane showing steering angle against the learned grip peak has been
