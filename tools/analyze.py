@@ -15,7 +15,10 @@ import math
 import sys
 from bisect import bisect_left
 
-REF_DEFAULT = "/home/amayorga/dev/rline/rline/data/lap.csv"
+# The track being driven, not the repository's oldest reference. Override with
+# --ref. Pointing this at the wrong circuit does not fail loudly - it silently
+# compares every corner against a different piece of road.
+REF_DEFAULT = "/home/amayorga/dev/rline/rline/data/muguello-ref.csv"
 
 
 def load_reference(path):

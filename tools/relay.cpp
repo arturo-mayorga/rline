@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "../src/build-id.h"
 #include "../src/voice-line.h"
 #include "../src/wire.h"
 
@@ -88,6 +89,29 @@ namespace
         if (!f)
             return;
         fprintf(f, "%s %s\n", stamp().c_str(), line.c_str());
+        fclose(f);
+    }
+
+    // What this machine believes it deployed. Compiled in from the same CMake
+    // variable that chooses which reference lap ships, so the two cannot drift
+    // apart in the one direction that matters - relay and rig are built from
+    // one tree, the rig is then copied by hand, and it is the copy that goes
+    // stale.
+#ifdef RLINE_TRACK_NAME
+    const char *kExpectTrack = RLINE_TRACK_NAME;
+#else
+    const char *kExpectTrack = "";
+#endif
+
+    // The rig's self-report, left where it can be read without scraping the
+    // log. Truncated each connection: this is current state, not a history.
+    void writeRigBuild(const std::string &line, const std::string &report)
+    {
+        const std::string path = g_dir + "\\rig-build.txt";
+        FILE *f = fopen(path.c_str(), "w");
+        if (!f)
+            return;
+        fprintf(f, "%s connected\n%s\n\n%s\n", stamp().c_str(), report.c_str(), line.c_str());
         fclose(f);
     }
 }
@@ -202,6 +226,7 @@ int main(int argc, char **argv)
         long rowsThisLap = 0;
         uint32_t lastSeq = 0;
         bool first = true;
+        bool sawBuild = false;
 
         for (;;)
         {
@@ -228,6 +253,19 @@ int main(int argc, char **argv)
                 if (!recvAll(s, &text[0], tlen))
                     break;
 
+                // The rig's own identity, sent once per connection ahead of any
+                // telemetry. Checked before speech because a BUILD line is not
+                // something the driver said and must never reach the transcript.
+                buildid::Info bi;
+                if (buildid::parseLine(text, &bi))
+                {
+                    sawBuild = true;
+                    const std::string report = buildid::describe(bi, kExpectTrack);
+                    printf("%s\n", report.c_str());
+                    writeRigBuild(text, report);
+                    continue;
+                }
+
                 std::string said;
                 float conf = 0;
                 if (voice::parseLine(text, &said, &conf))
@@ -250,6 +288,23 @@ int main(int argc, char **argv)
                 break;
             if (!recvAll(s, (char *)row.data(), (int)(row.size() * sizeof(float))))
                 break;
+
+            // The rig reports itself before its first frame, so by the time
+            // telemetry arrives its silence is conclusive rather than a race.
+            // Silence means an exe built before this existed - which is exactly
+            // the case that cost an evening: a rig quietly running the previous
+            // track's reference lap and corner names, indistinguishable from a
+            // driver ignoring his coaching.
+            if (first && !sawBuild)
+            {
+                printf("relay: *** the rig sent no build id ***\n");
+                printf("relay:   this exe predates build reporting, so what reference lap\n");
+                printf("relay:   and corner names it loaded CANNOT be confirmed from here.\n");
+                printf("relay:   copy rline-dist to the rig and restart it.\n");
+                writeRigBuild("(none)",
+                              "relay: *** the rig sent no build id - pre-reporting exe, "
+                              "track files unconfirmable ***");
+            }
 
             if (!first && seq != lastSeq + 1)
                 printf("relay: %u frames missing\n", seq - lastSeq - 1);

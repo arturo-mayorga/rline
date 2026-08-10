@@ -44,7 +44,10 @@ RATE_TOL = 2.0
 # personal best against a 100 s reference purely because 6% of the track was
 # missing from the timing.
 FULL_LAP = 0.98
-REFERENCE_S = 100.0    # the reference lap; anything near double this is not a lap
+# The reference lap for the track being driven; anything near double this is
+# not a lap. Track-dependent and easy to leave stale: at 100.0 the slow
+# threshold sits at 150 s, and a 140 s in-lap at Mugello passes as clean.
+REFERENCE_S = 83.63    # Mugello. Road America was 100.0
 SLOW_FACTOR = 1.5
 P2P_MIN = 0.01         # engaged for >1% of the lap counts as contaminated
 

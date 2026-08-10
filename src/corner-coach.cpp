@@ -125,6 +125,19 @@ std::string CornerCoach::fault(const RefLine &line, int idx) const
     // 4. A plain speed deficit, and only once the wheel is known to be inside
     //    the grip peak. Asking for more speed while the front is already
     //    saturated is the advice that has made this driver slower before.
+    //
+    //    Never on a corner the reference barely brakes for. GripCurve indexes
+    //    on steering *angle*, and in this car load rises with speed, not lock:
+    //    Arrabbiata is 4.2 g at 251 km/h on 0.88 rad, so it reads as nowhere
+    //    near the peak and this branch would fire on a turn taken flat. The
+    //    reference's own brake trace is the honest test - a corner it takes on
+    //    a trace of brake is aero-limited, and what is missing there is
+    //    commitment and line, never entry speed. It catches Mugello's detected
+    //    corner 3 (peak brake 0.13, a quarter of the lap, five fast turns) and
+    //    Road America's Carousel, which is the corner that first exposed this.
+    if (rc.peakBrake < aeroPeakBrake)
+        return std::string();
+
     if (rc.vmin > 1.0f && a.pastTurnIn && a.vmin < 1e8f &&
         a.vmin < rc.vmin - vminDeficitMs)
     {
@@ -186,16 +199,31 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
                 a.active = true;
                 a.vmin = 1e9f;
             }
-            // Brake pressure is judged over the whole approach, but speed only
-            // from turn-in - otherwise the previous corner's minimum leaks in.
+            // Each figure is measured over exactly the window RefCorner uses
+            // for its counterpart, or the comparison is between two different
+            // stretches of road. Brake and release run entry..apex; speed and
+            // lock run turnIn..exit. Getting this wrong is not a rounding
+            // error: Mugello's first corner runs on to within a few metres of
+            // the braking for Materassi, so measuring its release all the way
+            // to the exit picks up the *next* corner's brake and reports a
+            // 460 m late release on a lap that is the reference itself.
             if (!a.pastTurnIn && inSpan(pct, rc.pctTurnIn, rc.pctExit))
                 a.pastTurnIn = true;
             if (a.pastTurnIn)
+            {
                 a.vmin = std::min(a.vmin, speed);
-            a.peakBrake = std::max(a.peakBrake, brake);
-            a.peakSteer = std::max(a.peakSteer, fabsf(steer));
-            if (brake > kBrakeOn)
-                a.releasePct = pct;
+                a.peakSteer = std::max(a.peakSteer, fabsf(steer));
+            }
+            if (!a.pastApex)
+            {
+                a.peakBrake = std::max(a.peakBrake, brake);
+                if (brake > kBrakeOn)
+                    a.releasePct = pct;
+            }
+            // Set after accumulating, so the apex sample itself is included -
+            // the reference's loop is inclusive of the apex.
+            if (!a.pastApex && inSpan(pct, rc.pctApex, rc.pctExit))
+                a.pastApex = true;
         }
         else if (a.active)
         {

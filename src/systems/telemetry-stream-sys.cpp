@@ -1,5 +1,6 @@
 #include "telemetry-stream-sys.h"
 
+#include "../build-id.h"
 #include "../components/overlay-comp.h"
 #include "../irsdk/irsdk_client.h"
 #include "../irsdk/irsdk_defines.h"
@@ -117,6 +118,43 @@ bool TelemetryStreamSystem::sendAll(const char *data, int len)
         return false;
     }
     return true;
+}
+
+void TelemetryStreamSystem::sendBuildId(class ECS::World *world)
+{
+    buildid::Info info;
+    info.proto = wire::kVersion;
+    info.built = __DATE__ " " __TIME__;
+#ifdef RLINE_TRACK_NAME
+    info.track = RLINE_TRACK_NAME;
+#endif
+
+    // Hash the running binary rather than trusting the compile stamp: a
+    // translation unit that did not need recompiling keeps an old __DATE__,
+    // and the whole point here is a number that cannot quietly go stale.
+    char exePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(NULL, exePath, MAX_PATH))
+        info.exeHash = buildid::hashFile(exePath);
+
+    // Everything else is read from what is loaded in memory, so a stale file
+    // beside the exe reports itself instead of what we hoped was there.
+    world->each<RefLineComponentSP>(
+        [&](ECS::Entity *, ECS::ComponentHandle<RefLineComponentSP> h)
+        {
+            const RefLineComponent &r = *h.get();
+            info.refHash = r.refHash;
+            info.refPoints = r.line.pts.size();
+            info.refLength = r.line.length;
+            info.refLapTime = r.line.lapTime;
+            info.refCorners = (int)r.line.corners.size();
+            info.nameCount = (int)r.cornerNames.size();
+            if (!r.cornerNames.empty())
+                info.firstName = r.cornerNames.front();
+        });
+
+    const std::string line = buildid::buildLine(info);
+    if (sendText(line))
+        printf("rline: reported build to relay - %s\n", line.c_str());
 }
 
 bool TelemetryStreamSystem::sendText(const std::string &line)
@@ -312,6 +350,10 @@ void TelemetryStreamSystem::tick(class ECS::World *world, float deltaTime)
         _helloSent = true;
         _seq = 0;
         printf("rline: relay connected, streaming %d channels\n", (int)_channels.size());
+
+        // Before any telemetry, so the relay's log opens with what it is
+        // talking to rather than having to infer it later.
+        sendBuildId(world);
     }
 
     pumpIncoming(world);

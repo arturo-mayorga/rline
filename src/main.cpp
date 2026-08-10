@@ -1,5 +1,6 @@
 // rline - reference driving line overlay for iRacing.
 
+#include "build-id.h"
 #include "ecs.h"
 #include "refline.h"
 #include "talk-button.h"
@@ -371,10 +372,16 @@ int main(int argc, char **argv)
         ref->loaded = loadRefLineCsv(path, ref->line, &err);
         ref->error = err;
 
+        // Hashed from the bytes actually opened, so a stale lap.csv beside the
+        // exe reports its own identity rather than the one we hoped for. This
+        // is what the relay checks against on connection.
+        ref->refHash = buildid::hashFile(path);
+
         if (ref->loaded)
         {
-            logLine("rline: loaded %zu points, %.0f m, reference lap %.2f s, from %s",
-                    ref->line.pts.size(), ref->line.length, ref->line.lapTime, path.c_str());
+            logLine("rline: loaded %zu points, %.0f m, reference lap %.2f s, from %s [%s]",
+                    ref->line.pts.size(), ref->line.length, ref->line.lapTime, path.c_str(),
+                    ref->refHash.c_str());
         }
         else
         {

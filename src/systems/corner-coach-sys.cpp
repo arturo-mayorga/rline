@@ -22,6 +22,14 @@ void CornerCoachSystem::configure(class ECS::World *world)
     // Sits next to the exe, like the reference lap. Absent is not an error:
     // the coach falls back to the detector's own numbering.
     _coach.loadNames("corner-names.txt");
+
+    // Publish what will actually be spoken, so the rig can report it to the
+    // relay on connection. Read from the coach rather than the file, because
+    // the question being answered is "what will this rig say out loud" - and
+    // an unreadable or half-parsed file must show up as missing names here.
+    world->each<RefLineComponentSP>(
+        [&](ECS::Entity *, ECS::ComponentHandle<RefLineComponentSP> h)
+        { h.get()->cornerNames = _coach.names; });
 }
 void CornerCoachSystem::unconfigure(class ECS::World *world) {}
 

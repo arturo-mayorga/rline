@@ -45,6 +45,11 @@ private:
     void buildChannelList();
     void pumpIncoming(class ECS::World *world);
 
+    // Reports what this rig actually loaded, immediately after the hello. Sent
+    // every connection rather than once, so restarting the relay mid-session
+    // still tells the analysis machine what it is talking to.
+    void sendBuildId(class ECS::World *world);
+
 public:
     TelemetryStreamSystem(const std::string &host, int port);
     virtual ~TelemetryStreamSystem();

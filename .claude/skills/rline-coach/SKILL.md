@@ -36,8 +36,33 @@ nohup powershell.exe -Command "Start-Process -FilePath \
 
 # 2. driver launches rline.exe on the rig - no arguments needed
 # 3. confirm
-tail -5 /mnt/c/Users/amayorga/rline-build/relay-out.txt   # "connected, 281 channels"
+tail -12 /mnt/c/Users/amayorga/rline-build/relay-out.txt  # "connected, 281 channels"
 ```
+
+**The rig now says what it is running, and that answers the question that cost
+an evening on 2026-08-09.** Immediately after the handshake it sends one line
+reporting what it actually loaded, and relay prints it and writes it to
+`C:\rline-coach\rig-build.txt`:
+
+```
+relay: rig build f444c5b2, compiled Aug  9 2026 22:24:11, protocol 2
+relay:   track mugello - reference 455bbfae, 5021 points, 5189 m, 83.63 s, 6 corners
+relay:   6 corner names, first is "San Donato"
+```
+
+Every runtime field is measured from the structures in use, not from build
+settings, so a stale `lap.csv` sitting beside the exe reports *itself*. The two
+fields that settle it at a glance are `first` - "San Donato" means Mugello,
+"Turn one" means last week's folder - and `ref`, a hash of the reference file's
+bytes. Known-good Mugello hashes: reference `455bbfae`, exe `f444c5b2`.
+
+Three things get shouted about, all of which have actually happened: a track
+that disagrees with what this machine built (`*** WRONG TRACK ***`), no corner
+names loaded, and no reference lap loaded. **And silence is itself the
+diagnostic** - an exe built before this feature says nothing, so relay prints
+`*** the rig sent no build id ***` when the first telemetry frame arrives with
+no report before it. Never conclude the rig is current because the log looks
+normal; look for the build block.
 
 Watch for completed laps by **polling** — `tail -f` on `/mnt/c` never fires,
 because WSL gets no inotify events for files written by Windows processes. This
@@ -408,28 +433,49 @@ and `data/corner-names.txt` into the build directory. So a track change is a
 **file swap plus a redeploy**, and both files must move together — a Mugello
 reference with Road America names speaks the wrong corner at every single one.
 
-Not done yet as of 2026-08-09. What Mugello needs, in order:
+**Done 2026-08-09.** All five items below are complete and `rline-dist` ships
+Mugello. What was changed, and what to know about each:
 
-1. **Swap the two data files.** Ship `data/muguello-ref.csv` as `lap.csv` and
-   `data/corner-names-mugello.txt` as `corner-names.txt`. Cleanest is a CMake
-   variable (`-DRLINE_TRACK=mugello`) picking the pair, so Road America stays
-   one flag away and the tests keep pointing at `data/lap.csv`.
-2. **`tools/quick.py` will report nonsense.** Its `CORNERS` table is eleven
-   hard-coded Road America spans. At Mugello every span lands on the wrong
-   piece of road, and this is the tool used *while he is driving*. Either
-   replace the table or make it read the reference. Highest-priority item here.
-3. **`tools/analyze.py`** — `REF_DEFAULT` is an absolute path to
-   `data/lap.csv`. Pass `--ref data/muguello-ref.csv` every time, or change it.
-4. **`tools/lap-qc.py`** — `REFERENCE_S = 100.0` gives a 150 s slow threshold
-   against an 84 s lap, so a 140 s in-lap passes as clean. Set it to 84.
-5. **Decide the `room for more speed` suppression** on detected corner 3 — see
-   the grip section. This one is a driving risk, not a tooling annoyance.
+1. **The two data files are swapped by CMake.** `RLINE_TRACK` defaults to
+   `mugello` and selects the pair; `-DRLINE_TRACK=roadamerica` switches back.
+   The tests still name `data/lap.csv` directly, so they are unaffected by
+   whatever is deployed.
+2. **`tools/quick.py` now carries a per-track table** with `--track`, default
+   mugello, and prints the spoken corner name. Its spans are turn-in→exit, not
+   entry→exit, so a corner no longer reports its neighbour's minimum speed —
+   that leak had put four wrong reference vmins in the Road America table
+   (corners 4, 7, 8, 10 read 112/126/259/140 instead of 123/201/283/233).
+   Regenerate with `tools/dump-corners.cpp`, never by hand.
+3. **`tools/analyze.py`** — `REF_DEFAULT` now points at `data/muguello-ref.csv`.
+4. **`tools/lap-qc.py`** — `REFERENCE_S = 83.63`.
+5. **The speed-deficit cue is suppressed on aero-limited corners**, and the rule
+   is track-independent rather than a hard-coded corner 3: `CornerCoach` refuses
+   check 4 entirely when `RefCorner::peakBrake < aeroPeakBrake` (0.25). That
+   catches Mugello's detected 3 (0.13) and Road America's Carousel (0.00), which
+   is the corner that first exposed the blind spot. `test-corner-coach` asserts
+   no aero corner can ever draw a speed cue, on both references.
+
+**A measurement-window bug was found doing this, and it would have fired every
+lap.** `CornerCoach`'s accumulator measured peak brake and brake release over
+entry→exit, while `RefCorner` measures them over entry→**apex**; peak steer was
+entry→exit against the reference's turnIn→exit. At Road America the spans are
+short enough that this never showed. At Mugello, detected 1 (San Donato) runs on
+to within a few metres of the braking for Materassi, so it picked up the *next*
+corner's brake and reported a **460 m late release** — driving the reference lap
+back at itself produced "San Donato, off the brake sooner" every lap. That is
+his dominant-fault cue, on the most important braking corner on the circuit,
+fired on a perfect lap. Fixed in `corner-coach.cpp` by measuring each figure over
+exactly the window `RefCorner` uses for its counterpart. The regression test is
+"the reference lap draws no criticism", now run against **both** references —
+that assertion is what caught it, and it is why the Mugello reference is now a
+registered test case (`corner-coach-mugello`) rather than a manual check.
 
 `lap-qc.py` itself works unchanged on captured laps: the rig sends all 281
 channels including `SessionTime` and `P2P_Status`. It is only the *reference*
 exports that lack them, and those are never run through it.
 
-`./test.sh` runs six portable suites on Linux — no Windows SDK, no iRacing.
+`./test.sh` runs eleven portable suites on Linux — no Windows SDK, no iRacing —
+twelve runs, because `test-corner-coach` is run once against each reference.
 `test-corner-coach` covers what the rig says out loud, including assertions that
 the two harmful cues can never come back.
 
@@ -530,10 +576,57 @@ whole reason track-independent cues are preferred. What does not transfer is
 every corner name, every reference number, and the grip heuristic. Do not open
 a Mugello stint by quoting a Road America corner.
 
-The Mugello equivalents of "T14 is the only corner still clearly down" cannot be
-written until he has run laps there. The four mechanically-limited corners
-(San Donato, Scarperia, Correntaio, Bucine) are where the release cue applies
-and are the place to start looking.
+### Mugello, 2026-08-09 — the first evening of laps
+
+54 complete clean laps across three stints, all QC-verified, none P2P-affected.
+
+|  | stint 1 | stints 2–3 |
+|---|---|---|
+| flying laps | 16 | 32 |
+| best | 86.8 | **86.6** |
+| median | 88.8 | **87.9** |
+| sub-88 | 5 (31%) | 18 (56%) |
+
+**The gain is consistency, not peak.** The best lap moved only 0.2 s; the median
+moved 0.9 s and the sub-88 rate nearly doubled. Quote it that way — the peak
+number alone overstates what happened.
+
+**The four mechanically-limited corners were the right place to look, and all
+four fell to release cues**, exactly as at Road America. End state on a good lap
+(reference in brackets): San Donato 129 [129], Scarperia 155 [147], Correntaio
+137 [133], Bucine 164 [153]. Casanova reached 229 [229] without ever being
+coached — the aero suppression left it alone and it came good on its own.
+
+**Materassi is the one corner with no safe cue, and that is a tooling limit.**
+It ran 165–186 against a 196 reference with essentially no correlation to any
+brake metric. Fixing its pressure (0.71 → 0.31) and then its release (+127 m →
+0 m) each landed perfectly and moved the minimum speed by almost nothing. The
+segment data explains why: the loss splits between the *run down from San
+Donato* (11 km/h down before the braking zone even starts) and *Borgo San
+Lorenzo* at the far end of the same detected span, with his lock there at
+0.90–0.94 against a 1.01 reference — under-committed, not over-driving. The only
+instruction that addresses it is "carry more speed", which is the worst cue in
+his history. **Leave it alone until the sustained-lateral-G measure exists**
+(open thread 1). Twice it improved to a session best on laps where it was not
+cued.
+
+**Next target is San Donato's exit, not its apex.** Its minimum speed is fine —
+it hit the reference exactly — but he ran **1.00 brake pressure against a 0.95
+reference on every single lap of the evening**, releasing 40–75 m early, and
+the exit is where the run to Materassi is lost. That is mechanical, consistent
+and cueable, unlike Materassi itself.
+
+**Scarperia never beds in.** Fixed and re-fixed six times; it lands within one
+lap every time and drifts back within two or three. Expect to prompt it every
+stint. It is also the corner where the lock signature is worth watching: 1.98 rad
+with a late release preceded the worst moment of the evening.
+
+**Four incidents, and they cluster.** Two spins (Correntaio lap 33, San Donato
+exit lap 43), one save (Bucine lap 36), one low-speed spin that looked like
+avoidance rather than a driving error (Borgo San Lorenzo lap 55, braked from 146
+to a standstill). **None were at the corner he was working on** — each was
+somewhere he had stopped concentrating while executing a cue elsewhere. Three of
+the four came within a lap or two of either a personal best or a new cue.
 
 Next levers at Road America, in order, as of the end of 2026-08-05:
 

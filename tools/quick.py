@@ -7,33 +7,83 @@ reads only the handful of columns a coaching note actually turns on, in a
 single streaming pass, and prints one block.
 
     python3 tools/quick.py /mnt/c/rline-coach/laps/lap-0018.csv
+    python3 tools/quick.py lap.csv --track roadamerica
+
+Defaults to Mugello, which is what the rig is currently shipping.
 """
 
 import csv
 import sys
 
-# Corner spans as the rig detects them on data/lap.csv, with the reference's
-# own minimum speed through each. Hard-coded so this needs no second file read.
-CORNERS = [
-    (1, 0.0400, 0.1183, 211),
-    (2, 0.1158, 0.1892, 148),
-    (3, 0.2995, 0.3651, 112),
-    (4, 0.3456, 0.4107, 112),
-    (5, 0.3795, 0.4511, 123),
-    (6, 0.4470, 0.5142, 126),
-    (7, 0.4763, 0.6034, 126),
-    (8, 0.5978, 0.6726, 259),
-    (9, 0.7336, 0.7984, 140),
-    (10, 0.7806, 0.8533, 140),
-    (11, 0.8309, 0.9016, 159),
-]
+# Corner spans exactly as the rig's detector finds them, with the reference's
+# own minimum speed through each. Hard-coded so this needs no second file read
+# and stays fast enough to answer between laps.
+#
+# Each row is (detected number, spoken name, pctTurnIn, pctExit, ref vmin km/h).
+# The span is turn-in to exit, NOT entry to exit: corner spans overlap - 4 of 6
+# here and 8 of 11 at Road America - so a window that opens at the braking
+# point picks up the previous corner's apex and reports its minimum speed
+# instead of this corner's. That leak is what makes analyze.py print the same
+# "ref vmin" for adjacent corners, and it had put four wrong reference numbers
+# in this table.
+#
+# Regenerate with the rig's own detector rather than by hand - anything worked
+# out another way will disagree with what the car is actually being coached on:
+#
+#   g++ -std=c++17 -O2 -o /tmp/dump-corners tools/dump-corners.cpp src/refline.cpp
+#   /tmp/dump-corners data/muguello-ref.csv
+TRACKS = {
+    # Six detected corners across fifteen numbered turns. Every name stands for
+    # a stretch of road, not a turn - see data/corner-names-mugello.txt.
+    "mugello": {
+        "ref_lap_s": 83.63,
+        "corners": [
+            (1, "San Donato",  0.1246, 0.2272, 129),
+            (2, "Materassi",   0.2734, 0.3257, 196),
+            (3, "Casanova",    0.3600, 0.5309, 229),
+            (4, "Scarperia",   0.5720, 0.6213, 147),
+            (5, "Correntaio",  0.6733, 0.7708, 133),
+            (6, "Bucine",      0.8371, 0.8949, 153),
+        ],
+        # Corners the reference barely brakes for. Load here rises with speed,
+        # not lock, so these pull the most lateral g on the lap while looking
+        # unthreatened on the wheel. A speed deficit through one of them is not
+        # a corner to ask for more entry speed in - the rig suppresses that cue
+        # on them, and so should anything read off this table.
+        "aero": {3},
+    },
+    "roadamerica": {
+        "ref_lap_s": 100.0,
+        "corners": [
+            (1,  "T1",        0.0901, 0.1183, 211),
+            (2,  "T3",        0.1658, 0.1892, 148),
+            (3,  "T5",        0.3496, 0.3651, 112),
+            (4,  "T6",        0.3953, 0.4107, 123),
+            (5,  "T7",        0.4294, 0.4511, 212),
+            (6,  "T8",        0.4970, 0.5142, 126),
+            (7,  "T9",        0.5264, 0.6034, 201),
+            (8,  "Carousel",  0.6478, 0.6726, 283),
+            (9,  "T12",       0.7834, 0.7984, 140),
+            (10, "T13",       0.8306, 0.8533, 233),
+            (11, "T14",       0.8808, 0.9016, 159),
+        ],
+        "aero": {8},
+    },
+}
 
 # Where lateral grip stops improving for this driver, in radians. Past this,
 # more lock produces less grip - so it is the number worth counting.
 PEAK_STEER = 1.5
 
 
-def main(path):
+def main(path, track):
+    if track not in TRACKS:
+        print("unknown track %r - known: %s" % (track, ", ".join(sorted(TRACKS))))
+        return 1
+    cfg = TRACKS[track]
+    corners = cfg["corners"]
+    aero = cfg["aero"]
+
     with open(path, newline="") as fh:
         r = csv.reader(fh)
         hdr = next(r)
@@ -44,7 +94,7 @@ def main(path):
         ise = hdr.index("SessionTime")
 
         # per-corner: min speed, peak steer, samples, samples past the peak
-        agg = {c[0]: [1e9, 0.0, 0, 0] for c in CORNERS}
+        agg = {c[0]: [1e9, 0.0, 0, 0] for c in corners}
         t0 = t1 = None
         n = 0
 
@@ -60,7 +110,7 @@ def main(path):
             if t0 is None:
                 t0 = t
             t1 = t
-            for num, a, b, _ in CORNERS:
+            for num, _, a, b, _ in corners:
                 if a <= p <= b:
                     g = agg[num]
                     if v < g[0]:
@@ -73,31 +123,46 @@ def main(path):
 
     if not n:
         print("no usable rows")
-        return
+        return 1
 
     lap = (t1 - t0) if (t0 is not None and t1 is not None) else 0.0
-    print("lap %.1f s   (reference 100.0)   %d rows" % (lap, n))
-    print("%3s %8s %8s %9s %9s" % ("cnr", "vmin", "ref", "pkSteer", ">peak"))
+    print("%s: lap %.1f s   (reference %.2f)   %d rows"
+          % (track, lap, cfg["ref_lap_s"], n))
+    print("%3s %-11s %7s %7s %8s %8s" % ("cnr", "name", "vmin", "ref", "pkSteer", ">peak"))
 
     over = []
-    for num, _, _, refv in CORNERS:
+    for num, name, _, _, refv in corners:
         vmin, pk, tot, past = agg[num]
         if tot == 0:
             continue
         pct = 100.0 * past / tot
+        tag = "  aero" if num in aero else ""
         flag = "  <<" if pct > 5.0 else ""
-        print("%3d %8.0f %8d %9.2f %8.1f%%%s" % (num, vmin, refv, pk, pct, flag))
-        if pct > 5.0:
-            over.append((pct, num, pk, vmin, refv))
+        print("%3d %-11s %7.0f %7d %8.2f %7.1f%%%s%s"
+              % (num, name, vmin, refv, pk, pct, tag, flag))
+        # Aero corners are excluded from the "worst" pick for the same reason
+        # the rig will not cue speed on them: the answer there is commitment
+        # and line, and there is no brake release to move.
+        if pct > 5.0 and num not in aero:
+            over.append((pct, num, name, pk, vmin, refv))
 
     if over:
         over.sort(reverse=True)
-        pct, num, pk, vmin, refv = over[0]
-        print("\nworst lock: turn %d at %.2f rad, %.0f%% past the grip peak, "
-              "%.0f km/h under" % (num, pk, pct, refv - vmin))
+        pct, num, name, pk, vmin, refv = over[0]
+        print("\nworst lock: %s at %.2f rad, %.0f%% past the grip peak, "
+              "%.0f km/h under" % (name, pk, pct, refv - vmin))
     else:
         print("\nno corner past the grip peak - clean lap on the wheel")
+    return 0
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "/mnt/c/rline-coach/laps/lap-0001.csv")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    track = "mugello"
+    for i, a in enumerate(sys.argv):
+        if a == "--track" and i + 1 < len(sys.argv):
+            track = sys.argv[i + 1]
+            if track in args:
+                args.remove(track)
+    lap = args[0] if args else "/mnt/c/rline-coach/laps/lap-0001.csv"
+    sys.exit(main(lap, track))

@@ -135,7 +135,9 @@ int main(int argc, char **argv)
     }
 
     printf("reference: %d corners with per-corner data\n\n", (int)line.corners.size());
-    check(line.corners.size() >= 8, "the reference lap yielded corner data");
+    // Not a fixed count: the detector finds 11 at Road America and only 6 at
+    // Mugello, where most of the lap is too fast for it to see a corner at all.
+    check(line.corners.size() >= 5, "the reference lap yielded corner data");
 
     bool anyBrake = false, anyThrottle = false;
     for (const RefCorner &c : line.corners)
@@ -158,7 +160,7 @@ int main(int argc, char **argv)
         Tally t = replay(line, perfect, false);
         printf("       %d corners judged, %d clean, %d easier, %d trail, %d speed\n",
                t.total, t.good, t.easier, t.trail, t.speed);
-        check(t.total >= 8, "every corner was judged");
+        check(t.total >= (int)line.corners.size(), "every corner was judged");
         check(t.good == t.total, "the reference lap draws no criticism");
     }
 
@@ -260,6 +262,57 @@ int main(int argc, char **argv)
         check(ahead > 0, "the coach warns about corners still to come");
         check(ahead > behind, "warnings outnumber post-mortems once a lap is known");
         check(dupes == 0, "the same note is never said twice running");
+    }
+
+    printf("\n-- no speed cue on a corner the reference barely brakes for --\n");
+    {
+        // The grip curve reads on steering angle, and in this car lateral load
+        // rises with speed rather than lock: Mugello's Arrabbiata pulls 4.2 g
+        // at 251 km/h on 0.88 rad and reads as nowhere near the peak, so a
+        // speed-deficit cue would fire on a turn taken flat out. "Carry more
+        // speed" is the cue family that has measurably made this driver
+        // slower, so it must be impossible on those corners, not merely rare.
+        //
+        // Driven a long way under the reference everywhere, which is the state
+        // that provokes the cue, and for three laps so feed-forward warms up.
+        std::vector<Sample> slow;
+        for (const RefPoint &p : line.pts)
+            slow.push_back({p.pct, p.speed * 0.80f, p.brake, p.throttle, 1.0f, p.steer});
+
+        CornerCoach cc;
+        int aeroCorners = 0, aeroNotes = 0, speedNotes = 0;
+        for (const RefCorner &rc : line.corners)
+            if (rc.peakBrake < cc.aeroPeakBrake)
+                ++aeroCorners;
+
+        // Both halves of check 4 count: "turn in earlier" is reached through
+        // the same speed deficit and is just as wrong on a flat-out turn.
+        auto isSpeedCue = [](const std::string &s)
+        {
+            return s.find("room for more speed") != std::string::npos ||
+                   s.find("turn in earlier") != std::string::npos;
+        };
+
+        GripCurve g;
+        for (int lap = 0; lap < 3; ++lap)
+            for (const Sample &s : slow)
+            {
+                g.add(s.steer, 0, s.speed);
+                CornerVerdict v = cc.update(line, s.pct, s.speed, s.brake,
+                                            s.throttle, s.steer, g.peakSteer());
+                if (v.note.empty() || !isSpeedCue(v.note))
+                    continue;
+                ++speedNotes;
+                for (const RefCorner &rc : line.corners)
+                    if (rc.n == v.corner && rc.peakBrake < cc.aeroPeakBrake)
+                        ++aeroNotes;
+            }
+        printf("       %d of %d corners are aero-limited; %d speed cues in all, "
+               "%d of them about an aero corner\n",
+               aeroCorners, (int)line.corners.size(), speedNotes, aeroNotes);
+        check(aeroCorners > 0, "this reference has a corner taken near flat");
+        check(speedNotes > 0, "a lap driven this slowly does draw speed cues");
+        check(aeroNotes == 0, "an aero-limited corner is never coached on speed");
     }
 
     if (argc > 2)

@@ -105,6 +105,15 @@ struct RefLineComponent
     RefLine line;
     bool loaded = false;
     std::string error;
+
+    // Identity of what is actually in use, for the BUILD line the rig sends
+    // the relay on connection. Deliberately measured rather than configured:
+    // the failure this guards against is a stale lap.csv sitting beside the
+    // exe, and anything derived from build settings would report the intent
+    // instead of the reality. `cornerNames` is published by CornerCoachSystem
+    // once it has loaded them, so it is exactly what will be spoken aloud.
+    std::string refHash;
+    std::vector<std::string> cornerNames;
 };
 ECS_DEFINE_TYPE(RefLineComponent);
 typedef std::shared_ptr<RefLineComponent> RefLineComponentSP;

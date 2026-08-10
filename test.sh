@@ -42,6 +42,18 @@ g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-corner-coach \
     src/refline.cpp
 echo
 /tmp/rline-test-corner-coach data/lap.csv
+# Both references, because the cues have to be safe on the track being driven,
+# not only on the one the suite was written against. Mugello is the harder of
+# the two: six coarse corners, and a quarter of the lap taken flat out.
+echo
+/tmp/rline-test-corner-coach data/muguello-ref.csv
+
+# What the rig reports about itself when it connects. Absence of this line is
+# the diagnostic for a stale hand-copied rig, so it must never half-arrive.
+g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-build-id \
+    tests/test-build-id.cpp src/build-id.cpp
+echo
+/tmp/rline-test-build-id
 
 # What the driver's own voice is allowed to put on the wire. Recognition is
 # SAPI and rig-only, but a misrecognition must never be able to forge a field.

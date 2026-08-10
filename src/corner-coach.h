@@ -30,7 +30,9 @@
 //  3. Too much lock, past the point where his own grip curve stops improving.
 //  4. Only then, a plain speed deficit - and only when the wheel was inside
 //     the grip peak, because "carry more speed" to a driver already at the
-//     limit of front grip asks for more of what is not working.
+//     limit of front grip asks for more of what is not working. Never at all
+//     on a corner the reference barely brakes for: those are aero-limited, the
+//     grip curve cannot see it, and entry speed is not what is missing there.
 //
 // Two cues were deliberately removed. "Trail the brake in further" told him to
 // do more of his worst habit. "Get it rotated on entry" is heard as rotating
@@ -51,6 +53,12 @@ public:
     float releaseLateM = 25.0f;      // brake still on this far past the reference
     float vminDeficitMs = 2.2f;      // ~8 km/h under the reference
     float steerExcess = 1.15f;       // multiple of the reference's peak lock
+
+    // Below this reference peak brake a corner counts as aero-limited, and no
+    // speed-deficit cue may be given for it at all. See check 4 in the .cpp:
+    // the grip curve reads on lock, so a 250 km/h turn pulling 4.2 g on light
+    // hands looks unthreatened when it is the most loaded corner on the lap.
+    float aeroPeakBrake = 0.25f;
 
     // What each corner is called out loud - the whole subject phrase, so a
     // corner with a name rather than a number ("The carousel") reads properly.
@@ -86,6 +94,7 @@ private:
     {
         bool active = false;
         bool pastTurnIn = false;
+        bool pastApex = false;
         float vmin = 0;
         float peakBrake = 0;
         float peakSteer = 0;
