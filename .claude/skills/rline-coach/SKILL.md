@@ -45,16 +45,22 @@ reporting what it actually loaded, and relay prints it and writes it to
 `C:\rline-coach\rig-build.txt`:
 
 ```
-relay: rig build f444c5b2, compiled Aug  9 2026 22:24:11, protocol 2
+relay: rig build 2790a5ce, compiled Aug  9 2026 22:24:34, protocol 2
 relay:   track mugello - reference 455bbfae, 5021 points, 5189 m, 83.63 s, 6 corners
-relay:   6 corner names, first is "San Donato"
+relay:   6 corner names, first is "turn one"
 ```
 
 Every runtime field is measured from the structures in use, not from build
 settings, so a stale `lap.csv` sitting beside the exe reports *itself*. The two
-fields that settle it at a glance are `first` - "San Donato" means Mugello,
-"Turn one" means last week's folder - and `ref`, a hash of the reference file's
-bytes. Known-good Mugello hashes: reference `455bbfae`, exe `f444c5b2`.
+fields that settle it at a glance are `first` - "turn one" means the current
+Mugello mapping, a corner *name* like "San Donato" means a pre-2026-08-11 names
+file, and "Turn one" capitalised means the Road America folder - and `ref`, a
+hash of the reference file's bytes. Known-good Mugello hashes: reference
+`455bbfae`, corner names `c6e15132`, exe `2790a5ce`.
+
+`built` is advisory and goes stale: it is `__DATE__`/`__TIME__` from
+`build-id.cpp`, which only recompiles when that file changes, so a fresh build
+can report an old timestamp. The exe hash is exact - trust that instead.
 
 Three things get shouted about, all of which have actually happened: a track
 that disagrees with what this machine built (`*** WRONG TRACK ***`), no corner
@@ -169,7 +175,7 @@ python3 tools/bias.py                # groups laps by dcBrakeBias automatically
 
 **Run `lap-qc.py` before quoting any number from a lap.** The archiver runs it
 automatically on everything it takes and appends the verdict to
-`/mnt/c/rline-coach/archive/qc.log`; **poll that log during the stint**, not
+`/mnt/e/games/qc.log`; **poll that log during the stint**, not
 after. It catches spliced files, partial laps, and push-to-pass. Watching the
 relay log alone is not enough — it says a lap was *written*, never whether the
 copy that survived is intact.
@@ -208,7 +214,19 @@ doubles the log noise.
 **Start the lap archiver before he goes out** — `tools/archive-laps.sh`. `relay`
 reuses `lap-NNNN.csv` whenever iRacing's lap counter repeats, which happens on
 every reset to pits, so a completed flying lap can be destroyed minutes after it
-is written. Starting it mid-stint does not recover what is already gone.
+is written. Starting it mid-stint does not recover what is already gone. It
+works: on 2026-08-11 a run of rapid resets rewrote `lap-0031.csv` 86 times and
+every distinct version was preserved, the content hash making the duplicates
+free.
+
+**The archive lives on E:, not C:.** `DEST` is `/mnt/e/games/live` and `QCLOG`
+is `/mnt/e/games/qc.log`, both overridable by environment variable. They moved
+on 2026-08-11 because 13 GB of laps had filled the system drive to 237 MB free
+and *relay tore its writes* - rows lost mid-file, so the sample rate read
+36-57 Hz instead of 60 and `LapDistPct` ran to 4033 where it can only be 0..1.
+`lap-qc.py` called those laps `SPLICE`, which is the closest verdict it has but
+not the cause. **One lap of that entire session survived.** If splices start
+appearing across a whole stint, check free space before believing the data.
 
 **The trigger is relay's own log, not a settle timer.** relay prints
 `lap N written` *after* it closes the file, so that line is a guarantee the lap
@@ -219,6 +237,15 @@ while appearing to run perfectly, and even 1 s poll / 3 s settle lost one lap
 that evening to a reset within 3 s of the line. Verify it works rather than that
 it is running — drop a >4 MB file into the laps directory, append a matching
 `relay: lap N written` line, and confirm it is archived in the same second.
+Done on 2026-08-11: archived within 4 s, QC verdict `ok / 60.0Hz`.
+
+**`SPLICE` on a `[scan]` line is normal; on a `[log]` line it is not.** The
+settle scan copies files while relay is still writing them, so a mid-write copy
+legitimately reads as spliced and partial - there were 75 such lines on
+2026-08-11 and not one real splice. The `[log]` copies are taken after relay's
+`fclose` and are the authoritative ones. Filter on `[log]` and `pct 0.00-1.00`
+before quoting any lap time: a `[scan]` row at `pct 0.00-0.99` is a lap caught
+just before the line and its time reads about 0.4 s fast.
 
 **Never edit `relay-out.txt` while a monitor is tailing it.** Removing a line
 makes the line count drop, the watcher resets and replays the entire log, and
@@ -232,6 +259,142 @@ the join. Corners wholly inside the clean segment are still usable — check the
 corner's whole brake zone is covered against the reference's absolute brake-on
 distance. Never quote the lap time of a spliced file.
 
+## Race day
+
+A race day is practice, a sprint, a ten minute warmup, then the feature. The
+coaching rules are not the same in each, and since 2026-08-12 the rig enforces
+that itself rather than relying on anyone remembering.
+
+| session | mode | what the rig may say |
+|---|---|---|
+| practice, testing | `full` | everything, including corners never raised before |
+| warmup | `confirm` | only corners already established. Nothing new. |
+| qualifying, race | `silent` | nothing about technique at all |
+| pit lane, any caution | `silent` | overrides the session type |
+| out-lap | never above `confirm` | the remembered fault predates the stop |
+
+Anything iRacing names unexpectedly falls to `confirm`, never to `full` - a new
+session name is likelier to be a race variant than a practice one, and the cost
+of guessing wrong is asymmetric.
+
+**Why silence rather than less coaching.** He loses the corner he is not
+thinking about - demonstrated on 2026-08-04, 08-09 and 08-11 - and on 2026-08-09
+three of four incidents came within a lap or two of a new cue. In practice a
+mistimed cue costs half a second and the worst one measured cost 4.4 s. In a
+race it costs contact. A ten minute warmup is one out-lap and three or four
+flying laps: enough to check a cue still lands, nowhere near enough to teach one.
+
+**Only speaking is suppressed.** The accumulators keep measuring and each
+corner's remembered fault keeps updating through a whole silent race, so the
+first practice lap afterwards is already feed-forward rather than a wasted
+reconnaissance lap. A test asserts exactly that.
+
+Override from here without a rebuild - the rig has no command line:
+
+```bash
+printf 'COACH|mode=silent\n' >> /mnt/c/rline-coach/outbox.txt   # panic button
+printf 'COACH|mode=auto\n'   >> /mnt/c/rline-coach/outbox.txt   # hand it back
+```
+
+`full`/`on`, `confirm`, `silent`/`off`, `auto`. An unrecognised mode is refused
+rather than guessed, and a refused command leaves the current mode alone. The
+rig logs every transition with the reason.
+
+### What the first race day actually taught (2026-08-12)
+
+Official race at Mugello: practice, 8-minute 2-lap qualifying, 14-lap race.
+**Finished P7 from 10th, zero incidents, fuel never in doubt.**
+
+**The session-type auto-detect did not work, and now does.** The SDK's
+`parseYaml` returned nothing for every documented spelling of its array syntax,
+so `fromSessionType` got an empty string, every session fell to the safe
+`confirm`, and the coach had to be pinned by hand with `COACH|mode=silent`.
+Replaced by `sessionpolicy::typeFromYaml`, which scans the session-info string
+for the matching `SessionNum:` and takes the `SessionType:` before the next one.
+Tested on Linux against the four-session league layout, including the case where
+a session has no type and must not borrow the next one's.
+
+**`PlayerCarPosition` reads one lower than the classified result.** Telemetry
+said 9 for a P10 grid slot and 6 for a P7 finish - both settled values, both
+exactly one out. `tools/engineer.py` adds 1. Confirm against a results screen
+before trusting it further; it is inferred from two samples.
+
+**`SAY|secs=` is screen time, not shelf life.** Use about **4**. Sending 20-120
+left notes on his panel for up to two minutes and he asked for it to stop.
+
+**Fuel per lap must come from completed laps.** `FuelUsePerHour` reads zero off
+throttle, so scaling it by lap time gave 2.28 L/lap one sample and near zero the
+next - a margin swinging from -33 to +651 laps in six seconds. `engineer.py` now
+takes the median tank drop across consecutive completed laps: **1.99 L/lap** at
+Mugello, stable over 52 laps.
+
+**Guard the end of a lap-limited race.** When `SessionLapsRemainEx` hits 0,
+`SessionTimeRemain` is the 604800-second sentinel; dividing it by lap time
+reported 6811 laps remaining and a false "fuel SHORT" on the last lap.
+
+**P2P at Mugello is worth about 5 km/h of top speed, not lap time.** Boosted
+297.9 km/h against 292.0 and 292.6 clean, yet the boosted lap came out 88.3
+against 88.2 clean. Use it to attack or defend into turn one. **His fastest race
+lap was boosted** - the only clean fast laps of the day were qualifying (87.7,
+87.8), which is the true PB. Nearly every race lap carried 7-11% boost, so race
+pace is boost-contaminated; qualifying is not.
+
+**Session boundaries make `SPLICE` normal.** `SessionTime` resets between
+sessions and relay's `lap-0` file spans the change, so it reads as a negative
+duration at 0.0 Hz. On a race day `SPLICE` no longer implies a disk problem -
+check the duration sign first.
+
+**Do not filter QC lines on `"0.0Hz"`.** It also matches `60.0Hz`, which hid
+every clean lap of the race from the monitor. Filter on a negative duration.
+
+**The archiver was copying files that were still growing.** mtime under drvfs
+updates lazily, so the 3-second settle passed on a file relay was actively
+appending to: a 50 MB `lap-0000` was archived 119 times, about 3 GB in ten
+minutes. It now requires the size to be unchanged between consecutive polls.
+
+### Race-day analysis is different in three ways
+
+**Most laps are not measurements.** `lap-qc.py` now flags `FLAG` (any caution)
+and `TRAFFIC` (another car within 2 s ahead for more than 10% of the lap).
+Expect these to outnumber clean laps in a race. A corner minimum taken two
+lengths behind someone is somebody else's line as much as his.
+
+**Never read `SessionFlags` from a lap CSV.** It is carried as float32, and with
+the start-light bits set it sits near 2.7e8 where float32 spacing is 32 - so
+`irsdk_yellow` (0x8) and `irsdk_yellowWaving` (0x100) are rounded away before
+relay ever sees them. Checking it directly reported **"caution 100% of lap" on a
+clean practice lap**. The rig now publishes `CoachYellow`, decided where the
+integer is still exact, plus `SessionFlagsLo`/`SessionFlagsHi` for anything that
+wants the full bitfield, and `CoachPolicy`/`CoachOutLap` so the analysis can see
+what the coach was allowed to say. Laps captured before 2026-08-12 have none of
+these and the flag check disables itself rather than guessing.
+
+**Fuel makes a stint look like improvement.** `tools/pace.py` regresses lap time
+against `FuelLevel` and prints the fit quality next to the correction. Do not
+fit it on a coached stint: over the first stint of 2026-08-11 it reports
+0.086 s/L at r2 0.58, which across that stint's 20 litres is 1.7 s - almost
+exactly the gain that came from the coaching. Fuel fell and lap time fell and
+the regression cannot tell which caused which. Corner minimum speeds barely move
+with fuel; prefer them.
+
+### Other cars
+
+`data/car-channels.txt` lists which 64-wide `CarIdx` arrays the rig expands into
+per-slot scalars (`CarIdxLapDistPct_00` .. `_63`), so the wire protocol, relay,
+the CSV writer and every tool are unchanged - just more columns. **It syncs from
+the relay**, so changing what is streamed is an edit here and a rig restart,
+never a rebuild. Four channels cost roughly 6 MB per lap file on top of 7 MB;
+do not paste the whole `CarIdx` list in, there are about twenty.
+
+**Use field data to build the target, never to cue him.** "The car ahead is
+carrying 155 through turn ten and you are at 148" is the purest form of the one
+cue that has made him slower every single time - an outcome, about someone else,
+with social pressure attached. What it is genuinely for is the problem found on
+2026-08-11: the reference lap is 83.63 s and the quickest lap anyone posted in
+his session was about 86, so every "time lost" figure was measured against a lap
+nobody was driving. Field minimums give a same-day, same-track-state target, and
+they mark which laps were clean.
+
 ## Corner numbering — read this before speaking a single corner number
 
 The detector numbers what it finds 1..N from start/finish. **Those are not the
@@ -241,8 +404,20 @@ entire session was coached using detector numbers, sending the driver to the
 wrong piece of road every time.
 
 `data/corner-names.txt` holds the mapping, is copied next to the exe by CMake,
-and is read at startup by `CornerCoach::loadNames`. The rig speaks those names.
-When the reference lap changes, redo the mapping.
+fetched by the rig from the relay at startup, and read by
+`CornerCoach::loadNames`. When the reference lap changes, redo the mapping.
+
+**The rig speaks track turn numbers, not names, since 2026-08-11.** He asked
+for it mid-session - "I can't keep track of corner names" - so
+`data/corner-names-mugello.txt` now reads `turn one`, `turn four`, `turn six`,
+`turn ten`, `turn twelve`, `turn fifteen`. Say the same over the relay; never
+say "San Donato" and never say a detector index.
+
+A number is often *more* precise than the name was: a detected corner spans
+several turns, so naming the exact turn places a cue the name could not. The
+brake stabbing on 2026-08-11 was at **T11 Palagio**, inside the span the file
+calls `turn ten` (T10 Scarperia). Where a fault sits at the far end of a span,
+say the real turn from the relay rather than the file's label.
 
 `data/corner-names-mugello.txt` is the Mugello mapping. **Deploy the one that
 matches the reference lap on the rig**, renamed to `corner-names.txt` — the rig
@@ -268,14 +443,14 @@ stretch of road, not a turn, so each name below is also a warning about what it
 swallows. Anchored at both ends: detected 1 is the only corner braked at 0.95
 (San Donato, the slowest); detected 3 is the only one with essentially no brake.
 
-| detected | turn-in | apex | ref vmin | peak brk | spoken name | actually covers |
+| detected | turn-in | apex | ref vmin | peak brk | **say** | actually covers |
 |---|---|---|---|---|---|---|
-| 1 | 647 m | 734 m | 129 | 0.95 | San Donato | T1, T2 Luco, T3 Poggio Secco |
-| 2 | 1419 m | 1624 m | 196 | 0.40 | Materassi | T4, T5 Borgo San Lorenzo |
-| 3 | 1868 m | 1972 m | 229 | 0.13 | Casanova | T6, T7 Savelli, **T8+T9 Arrabbiata** |
-| 4 | 2969 m | 3031 m | 147 | 0.88 | Scarperia | T10, T11 Palagio |
-| 5 | 3494 m | 3617 m | 133 | 0.78 | Correntaio | T12, T13+T14 Biondetti |
-| 6 | 4344 m | 4479 m | 153 | 0.81 | Bucine | T15 |
+| 1 | 647 m | 734 m | 129 | 0.95 | **turn one** | T1 San Donato, T2 Luco, T3 Poggio Secco |
+| 2 | 1419 m | 1624 m | 196 | 0.40 | **turn four** | T4 Materassi, T5 Borgo San Lorenzo |
+| 3 | 1868 m | 1972 m | 229 | 0.13 | **turn six** | T6 Casanova, T7 Savelli, **T8+T9 Arrabbiata** |
+| 4 | 2969 m | 3031 m | 147 | 0.88 | **turn ten** | T10 Scarperia, T11 Palagio |
+| 5 | 3494 m | 3617 m | 133 | 0.78 | **turn twelve** | T12 Correntaio, T13+T14 Biondetti |
+| 6 | 4344 m | 4479 m | 153 | 0.81 | **turn fifteen** | T15 Bucine |
 
 Detected 2 is named for its braking (Materassi) while its apex and minimum land
 at Borgo San Lorenzo — the brake release is what he is cued on, so the entry
@@ -323,8 +498,8 @@ what to do about this before the next stint** — the cheapest safe answer is to
 suppress the speed-deficit cue on detected corner 3 entirely.
 
 Cross-check the mapping by asking which corners he has to *brake* for, not
-which are grip-limited. The answer must be San Donato, Scarperia, Correntaio
-and Bucine, and nothing between Materassi and Scarperia.
+which are grip-limited. The answer must be turns one, ten, twelve and fifteen,
+and nothing between turn four and turn ten.
 
 ### Road America — the previous mapping
 
@@ -421,9 +596,46 @@ cp build/Release/rline.exe /mnt/c/Users/amayorga/rline-dist/
 Build `--target rline` rather than everything: `relay.exe` runs on this machine
 during a session and relinking it fails with `LNK1104` while it is up.
 
-Tell the driver to copy **the whole `C:\Users\amayorga\rline-dist` folder** and
-restart — it now carries `corner-names.txt` as well as `lap.csv`, and without it
-the rig speaks detector numbering again.
+**Since 2026-08-11 the driver copies `rline.exe` alone.** The rig fetches
+`lap.csv` and `corner-names.txt` from the relay itself, so a track change, a
+new reference or a renamed corner needs no folder copy - only a rig restart.
+Copy the whole `rline-dist` folder only when it is a fresh install with no data
+files beside the exe; the sync handles that case too, it is just slower.
+
+### The rig fetches its own track data
+
+On startup, before it loads anything, the rig opens a short-lived connection to
+the relay on the same port, says which files it has and what they hash to, and
+takes back any that differ. Then it loads from disk exactly as it always did -
+sync-then-load, so there is no runtime reload path to get wrong.
+
+```
+relay: <- rig asking for track data (protocol 1)
+relay:    lap.csv - sending 788134 bytes [455bbfae], rig had [none]
+relay:    corner-names.txt - already current [c6e15132]
+```
+
+Relay serves from beside `relay.exe`, which is where CMake already puts the pair
+chosen by `RLINE_TRACK`, so what it serves and what this machine built cannot
+disagree. `--data <dir>` overrides it. Relay prints the pair and their hashes at
+startup, and shouts if either is missing.
+
+**It fails soft, deliberately.** A relay that is down, busy with an older
+connection, or serving a truncated file all end the same way: cached files
+untouched, rig starts anyway, and the log says
+`no relay at ... using the cached files`. **That line means the sync did not
+happen** - it is the state where the rig coaches from whatever was last copied,
+which is the failure the feature exists to remove. Do not read a normal-looking
+startup as proof the data is current; look for the `updated`/`already current`
+count.
+
+Two properties worth not breaking, both asserted in `test-data-sync`: only
+`lap.csv` and `corner-names.txt` can ever be written (an allowlist, so path
+traversal is unrepresentable rather than sanitised), and bytes are hashed after
+arrival and written to a temp name renamed only on a match - a truncated
+download must never replace a good reference lap. The portable half is
+`src/data-sync.cpp`, tested on Linux; the socket halves are
+`src/data-sync-net.cpp` on the rig and `serveSync` in `tools/relay.cpp`.
 
 ### Switching the rig to a different track
 
@@ -627,6 +839,54 @@ avoidance rather than a driving error (Borgo San Lorenzo lap 55, braked from 146
 to a standstill). **None were at the corner he was working on** — each was
 somewhere he had stopped concentrating while executing a cue elsewhere. Three of
 the four came within a lap or two of either a personal best or a new cue.
+
+### Mugello, 2026-08-11 — the first evening coached against correct cues
+
+30 complete flying laps, all QC-clean at 60 Hz, none lost. Best **87.9**, median
+**89.0**, 12 of 30 under 89. Slightly off 08-09 (86.6 / 87.9) - but the rig ran
+a pre-2026-08-09 exe that entire evening *and* the first stint of this one, so
+08-09's coaching numbers describe a rig firing a false turn-one cue every lap
+with no aero suppression. These are the first laps driven against correct cues.
+
+**Three faults were fixed and held.** Turn ten, turn twelve and turn fifteen all
+reached and held reference minimum speed simultaneously, with no active cue by
+the end. The brake stabbing went to **zero mid-corner re-applications - better
+than the reference lap**, which has one at turn one.
+
+**Baseline the dab count before cueing it.** The reference itself re-applies the
+brake once, at turn one, where T1 runs into T2. Two presses there is correct
+technique. Four (2026-08-11 lap 16) is the near-spin signature.
+
+**Turn one resists coaching** - it degraded under a pressure cue and under the
+coast cue and came right all three times it was left alone. See the memory of
+the same name; the short version is that its gap can only be closed by braking
+longer, which is the banned direction, so leave it uncued.
+
+**Release point cannot be read without peak pressure.** At turn fifteen he
+released 70-79 m *early* and ran 157-159; releasing at the reference point
+dropped him to 139-145. The reference's late release works because it is at
+0.81; his at 0.58 is just a long light drag - the root fault exactly. Both
+halves of "squeeze the brake harder then off it sooner" applied, and it landed
+in one lap.
+
+**The coast cue has a range.** It produced the biggest gain of the night
+(6.26 s to 4.08 s lost) while there was slack, then stopped paying: across the
+second stint, *less* coasting correlated with *slower* laps. Retired rather than
+repeated. Lap time tracks corner minimum speeds, not coast distance, once the
+corners are near reference.
+
+Next levers at Mugello, in order:
+
+1. **Revisit the trail-brake ban.** It was written for the opposite fault to the
+   one he has now, and it is the binding constraint on turn one and on every
+   corner's coast - roughly 1.5 s. Replay these 30 laps through `CornerCoach`
+   before changing anything.
+2. **Split detected corner 4** so turn eleven can be cued apart from turn ten.
+   Both of the evening's stabbing incidents were at T11, cued as "turn ten".
+3. **The sustained-lateral-G measure** (open thread 1), which is what would make
+   turn four and turn six - about 1.5 s more - coachable at all.
+4. **Brake bias is 55.58**, right at the top of the band where every metric
+   starts degrading. Untested at Mugello; the supporting data is Road America.
 
 Next levers at Road America, in order, as of the end of 2026-08-05:
 

@@ -1,0 +1,40 @@
+# Per-car telemetry arrays to stream, one iRacing channel name per line.
+#
+# The rig otherwise sends scalars only - `if (vh->count != 1) continue` in
+# telemetry-stream-sys.cpp - which was fine until race day. Everything about
+# other cars lives in 64-wide CarIdx arrays, and without them two things are
+# impossible on this side: knowing whether a lap was driven in clean air, and
+# building a corner-speed target from the field instead of from a reference lap
+# that turned out to be 2.4 s quicker than anyone in the session.
+#
+# Each name here is expanded into one channel per car slot (72 of them) - CarIdxLapDistPct
+# becomes CarIdxLapDistPct_00 .. CarIdxLapDistPct_71 (iRacing has 72 slots) - so the wire protocol,
+# relay, the CSV writer and every analysis tool are unchanged. They are just
+# more columns.
+#
+# **This file syncs from the relay**, like lap.csv and corner-names.txt. Adding
+# a channel here needs an edit on the analysis machine and a rig restart - never
+# a rebuild, and never a copy onto a machine with no dev tools. That is the
+# whole reason the list is data rather than code.
+#
+# COST. Each name is 64 more floats per frame: ~15 KB/s on the wire and roughly
+# 1.6 MB per lap of CSV, against 7.2 MB for the 281 scalars. The four below take
+# a lap file from about 7 MB to about 13 MB. Do not paste the whole CarIdx list
+# in here - there are around twenty, and all of them would quadruple every lap
+# file and slow every tool that reads one. Add what an analysis actually needs.
+#
+# Blank lines and # comments are ignored. Unknown names are ignored silently by
+# the rig, because this file is written here and read there, and a channel that
+# does not exist in the current iRacing build must not stop the rig streaming.
+
+# Where every car is on track. The one that matters: clean-air detection and
+# their corner minimum speeds both come from differentiating this.
+CarIdxLapDistPct
+
+# Which lap each car is on, so their laps can be split the way ours are.
+CarIdxLap
+
+# Cars to exclude before computing anything. A car in the pits is not traffic,
+# and a car off track is not a lap time.
+CarIdxOnPitRoad
+CarIdxTrackSurface

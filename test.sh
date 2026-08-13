@@ -38,7 +38,7 @@ echo
 # What the rig says out loud. Worth a suite of its own: two of these cues were
 # removed because they told this driver to do more of what was hurting him.
 g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-corner-coach \
-    tests/test-corner-coach.cpp src/corner-coach.cpp src/grip-curve.cpp \
+    tests/test-corner-coach.cpp src/corner-coach.cpp src/session-policy.cpp src/grip-curve.cpp \
     src/refline.cpp
 echo
 /tmp/rline-test-corner-coach data/lap.csv
@@ -82,3 +82,19 @@ g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-speech-queue \
     tests/test-speech-queue.cpp src/speech-queue.cpp
 echo
 /tmp/rline-test-speech-queue
+
+# How much the coach may say, per session. Silence in a race is a safety
+# property, not a preference: three of the four incidents on 2026-08-09 came
+# within a lap or two of a new cue.
+g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-session-policy \
+    tests/test-session-policy.cpp src/session-policy.cpp
+echo
+/tmp/rline-test-session-policy
+
+# What the rig will accept over the wire and write beside its own executable.
+# The reference lap is what every coaching number is measured against, so the
+# allowlist and the hash check are the two things worth asserting hardest.
+g++ -std=c++17 -O2 -Wall -o /tmp/rline-test-data-sync \
+    tests/test-data-sync.cpp src/data-sync.cpp src/build-id.cpp
+echo
+/tmp/rline-test-data-sync

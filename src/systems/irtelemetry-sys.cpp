@@ -2,8 +2,11 @@
 
 #include "../components/overlay-comp.h"
 #include "../irsdk/irsdk_client.h"
+#include "../irsdk/irsdk_defines.h"
+#include "../session-policy.h"
 
 #include <cmath>
+#include <cstdio>
 
 // Player-car channels. iRacing publishes no absolute position live - there is
 // no Lat/Lon/Alt and no world X/Y/Z among the 300-odd channels - so lateral
@@ -20,6 +23,11 @@ static irsdkCVar g_throttle("Throttle");
 static irsdkCVar g_steer("SteeringWheelAngle");
 static irsdkCVar g_latAccel("LatAccel");
 static irsdkCVar g_isOnTrack("IsOnTrack");
+// Session context for the coaching policy. SessionFlags carries the cautions;
+// OnPitRoad and the lap counter together say whether this is an out-lap.
+static irsdkCVar g_sessionFlags("SessionFlags");
+static irsdkCVar g_onPitRoad("OnPitRoad");
+static irsdkCVar g_sessionNum("SessionNum");
 
 namespace
 {
@@ -66,6 +74,30 @@ void IrTelemetrySystem::tick(class ECS::World *world, float deltaTime)
             const RefLine &line = refH.get()->line;
 
             ego.onTrack = g_isOnTrack.getBool();
+            ego.sessionFlags = (unsigned)g_sessionFlags.getInt();
+            ego.onPitRoad = g_onPitRoad.getBool();
+
+            // The session type lives in the session-info YAML, not in the
+            // telemetry, and parsing it is far too expensive to do at 60 Hz -
+            // so it is re-read only when the session number changes, which is
+            // exactly when it can change. A race day is practice, sprint,
+            // warmup, feature: four transitions in an evening.
+            {
+                const int sn = g_sessionNum.getInt();
+                if (sn != _sessionNum || _sessionType.empty())
+                {
+                    _sessionNum = sn;
+                    // Read straight out of the session-info YAML with our own
+                    // extractor rather than the SDK's parseYaml, which returned
+                    // nothing for every documented spelling of its array syntax
+                    // and left the coach stuck on `confirm` for the whole of
+                    // 2026-08-12. sessionpolicy::typeFromYaml is tested on Linux.
+                    const char *yaml = irsdk_getSessionInfoStr();
+                    _sessionType = yaml ? sessionpolicy::typeFromYaml(yaml, sn)
+                                        : std::string();
+                }
+                ego.sessionType = _sessionType;
+            }
             ego.pct = g_lapDistPct.getFloat();
             ego.speed = g_speed.getFloat();
             ego.brake = g_brake.getFloat();
@@ -78,6 +110,15 @@ void IrTelemetrySystem::tick(class ECS::World *world, float deltaTime)
 
             const int lap = g_lap.getInt();
             const double now = g_sessionTime.getDouble();
+
+            // Leaving the pits starts an out-lap, which ends when the lap
+            // counter next moves. Latched on the transition rather than
+            // computed from OnPitRoad alone, because the car is off pit road
+            // for the whole of the out-lap.
+            if (_wasOnPitRoad && !ego.onPitRoad)
+                _pitExitLap = lap;
+            _wasOnPitRoad = ego.onPitRoad;
+            ego.outLap = ego.onPitRoad || (_pitExitLap >= 0 && lap == _pitExitLap);
 
             // A tow, a reset to pits or a jump in the replay moves the car
             // without driving it there, so track position jumps discontinuously.

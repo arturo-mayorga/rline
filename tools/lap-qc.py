@@ -16,6 +16,22 @@ Checks, in the order they have actually bitten us:
            in the garage reads as a clean lap.
   p2p      push-to-pass boost was engaged. Such a lap has extra power and is
            not comparable to a clean one; it must never be quoted as a best.
+  flag     the lap was run under a caution. Nothing measured on it means
+           anything, and on race day these will outnumber clean laps.
+
+           NOT read from SessionFlags, which cannot survive the wire: it is
+           carried as float32, and with the start-light bits set it sits near
+           2.7e8 where float32 spacing is 32 - so irsdk_yellow (0x8) and
+           irsdk_yellowWaving (0x100) are rounded away before the relay sees
+           them. Checking it directly reported "caution 100% of lap" on a clean
+           practice lap. The rig now publishes CoachYellow, decided where the
+           integer is still exact, plus SessionFlagsLo/Hi for anything else that
+           wants the bitfield. Old laps have none of these and skip the check.
+  traffic  another car was close enough ahead to affect the lap. A corner
+           minimum taken two lengths behind someone is not a data point about
+           this driver, and in a race most laps are like this. Needs the
+           CarIdx* columns, which only exist once car-channels.txt is streaming
+           - without them the check is silently skipped rather than guessed at.
 
 Getting the P2P channels right took some care, so do not "simplify" them:
 
@@ -51,6 +67,23 @@ REFERENCE_S = 83.63    # Mugello. Road America was 100.0
 SLOW_FACTOR = 1.5
 P2P_MIN = 0.01         # engaged for >1% of the lap counts as contaminated
 
+TRACK_M = 5189.0       # Mugello. Road America was 6413
+# Following distance under which a lap stops being a measurement of this
+# driver. Two seconds is the usual dirty-air threshold; well inside that the
+# corner speeds are somebody else's line as much as his.
+TRAFFIC_S = 2.0
+# How much of the lap has to be spent that close before the lap is written off.
+# A single corner spent catching someone is not a ruined lap.
+TRAFFIC_FRACTION = 0.10
+
+# irsdk_TrkLoc: -1 NotInWorld, 0 OffTrack, 1 InPitStall, 2 ApproachingPits,
+# 3 OnTrack. Only 3 is a car that can be traffic.
+TRK_ON_TRACK = 3
+
+# Caution bits from src/irsdk/irsdk_defines.h - yellow, yellowWaving, caution,
+# cautionWaving. Same set as sessionpolicy::kYellowFlagMask, deliberately.
+YELLOW_MASK = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
+
 
 def main(path):
     with open(path, newline="") as fh:
@@ -62,12 +95,36 @@ def main(path):
 
         ip, ise = idx("LapDistPct"), idx("SessionTime")
         istat, ipush = idx("P2P_Status"), idx("PushToPass")
+        ispeed = idx("Speed")
+        # CoachYellow first; SessionFlagsLo is the exact low half if an older
+        # rig sent it. Never bare SessionFlags - see the note above.
+        iyellow = idx("CoachYellow")
+        iflagslo = idx("SessionFlagsLo")
+        iself = idx("PlayerCarIdx")
+
+        # Per-car columns, present only once car-channels.txt is being
+        # streamed. Absent is normal on every lap captured before that, so the
+        # traffic check disables itself rather than reporting "no traffic".
+        # Discovered from the header, not assumed: iRacing's CarIdx arrays are
+        # 72 wide, not the 64 everyone remembers, and a hard-coded 64 would
+        # silently ignore any car in the last eight slots.
+        cars = []
+        for n in range(128):
+            cp = idx("CarIdxLapDistPct_%02d" % n)
+            if cp is None:
+                continue
+            cars.append((n, cp, idx("CarIdxOnPitRoad_%02d" % n),
+                         idx("CarIdxTrackSurface_%02d" % n)))
         if ip is None or ise is None:
             print("%s  UNREADABLE (missing LapDistPct/SessionTime)" % path.split("/")[-1])
             return 1
 
         pct, t = [], []
         boosted = 0
+        yellow = 0
+        close = 0
+        traffic_checked = 0
+        self_idx = None
         presses = 0
         prev_push = 0.0
         reversals = 0
@@ -83,6 +140,65 @@ def main(path):
             prev_t = s
             pct.append(p)
             t.append(s)
+
+            if iyellow is not None:
+                try:
+                    if float(x[iyellow]):
+                        yellow += 1
+                except (ValueError, IndexError):
+                    pass
+            elif iflagslo is not None:
+                try:
+                    if int(float(x[iflagslo])) & YELLOW_MASK:
+                        yellow += 1
+                except (ValueError, IndexError):
+                    pass
+
+            if cars:
+                if self_idx is None and iself is not None:
+                    try:
+                        self_idx = int(float(x[iself]))
+                    except (ValueError, IndexError):
+                        self_idx = -1
+                try:
+                    v = float(x[ispeed]) if ispeed is not None else 0.0
+                except (ValueError, IndexError):
+                    v = 0.0
+                # Below walking pace the time-gap blows up and means nothing.
+                if v > 5.0:
+                    traffic_checked += 1
+                    nearest = None
+                    for n, cp, ipit, isurf in cars:
+                        if n == self_idx:
+                            continue
+                        try:
+                            theirs = float(x[cp])
+                        except (ValueError, IndexError):
+                            continue
+                        if isurf is not None:
+                            try:
+                                if int(float(x[isurf])) != TRK_ON_TRACK:
+                                    continue
+                            except (ValueError, IndexError):
+                                pass
+                        if ipit is not None:
+                            try:
+                                if float(x[ipit]):
+                                    continue
+                            except (ValueError, IndexError):
+                                pass
+                        # Forward gap only. A car alongside or behind is not
+                        # what dirties the air in front of this one.
+                        d = theirs - p
+                        if d < 0:
+                            d += 1.0
+                        if d <= 0 or d > 0.5:
+                            continue
+                        gap = d * TRACK_M / v
+                        if nearest is None or gap < nearest:
+                            nearest = gap
+                    if nearest is not None and nearest < TRAFFIC_S:
+                        close += 1
             if istat is not None:
                 try:
                     if float(x[istat]):
@@ -115,6 +231,11 @@ def main(path):
         flags.append("PARTIAL(%.0f%% of lap)" % (cover * 100))
     if span > REFERENCE_S * SLOW_FACTOR:
         flags.append("SLOW(%.0fs - not a flying lap)" % span)
+    if yellow:
+        flags.append("FLAG(caution %.0f%% of lap)" % (100.0 * yellow / len(pct)))
+    if traffic_checked and close / float(traffic_checked) > TRAFFIC_FRACTION:
+        flags.append("TRAFFIC(within %.0fs for %.0f%% of lap)"
+                     % (TRAFFIC_S, 100.0 * close / traffic_checked))
     if boost > P2P_MIN:
         flags.append("P2P(boost %.0f%% of lap)" % (boost * 100))
     elif presses:

@@ -193,33 +193,120 @@ bool TelemetryStreamSystem::sendText(const std::string &line)
     return true;
 }
 
+// Per-car arrays the analysis machine has asked for, one name per line, read
+// from car-channels.txt beside the exe. Syncs from the relay like the reference
+// lap does, so changing what is streamed is an edit there and a restart here -
+// never a rebuild, on a machine with no dev tools.
+void TelemetryStreamSystem::loadCarChannels()
+{
+    _carChannels.clear();
+
+    FILE *f = fopen("car-channels.txt", "r");
+    if (!f)
+        return;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f))
+    {
+        std::string s(line);
+        const size_t hash = s.find('#');
+        if (hash != std::string::npos)
+            s.erase(hash);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' ||
+                              s.back() == '\t'))
+            s.pop_back();
+        size_t b = 0;
+        while (b < s.size() && (s[b] == ' ' || s[b] == '\t'))
+            ++b;
+        s.erase(0, b);
+        if (!s.empty())
+            _carChannels.push_back(s);
+    }
+    fclose(f);
+}
+
 void TelemetryStreamSystem::buildChannelList()
 {
     _varIdx.clear();
+    _varEntry.clear();
     _channels.clear();
 
     const irsdk_header *hdr = irsdk_getHeader();
     if (!hdr)
         return;
 
+    loadCarChannels();
+
+    int expanded = 0;
     for (int i = 0; i < hdr->numVars; ++i)
     {
         const irsdk_varHeader *vh = irsdk_getVarHeaderEntry(i);
         if (!vh)
             continue;
 
-        // Scalars only. The _ST channels are 6-wide 360 Hz arrays that would
-        // triple the wire size for data no coaching analysis has wanted yet.
-        if (vh->count != 1)
+        if (vh->count == 1)
+        {
+            wire::ChannelDesc d = {};
+            strncpy(d.name, vh->name, wire::kNameLen - 1);
+            strncpy(d.unit, vh->unit, wire::kUnitLen - 1);
+
+            _channels.push_back(d);
+            _varIdx.push_back(i);
+            _varEntry.push_back(0);
+            continue;
+        }
+
+        // An array. Only the ones named in car-channels.txt are sent, and each
+        // is flattened into one channel per slot - CarIdxLapDistPct_00 .. _63 -
+        // so the wire protocol, the relay, the CSV writer and every analysis
+        // tool stay exactly as they were. They are just more columns.
+        //
+        // Not all arrays: the _ST channels are 6-wide at 360 Hz, and the full
+        // CarIdx set is around twenty names, which at 64 slots each would
+        // quadruple every lap file for data nothing has asked for.
+        bool wanted = false;
+        for (const std::string &want : _carChannels)
+            if (want == vh->name)
+            {
+                wanted = true;
+                break;
+            }
+        if (!wanted)
             continue;
 
-        wire::ChannelDesc d = {};
-        strncpy(d.name, vh->name, wire::kNameLen - 1);
-        strncpy(d.unit, vh->unit, wire::kUnitLen - 1);
+        for (int e = 0; e < vh->count; ++e)
+        {
+            wire::ChannelDesc d = {};
+            // Truncation would collide two slots into one column name, so the
+            // name is built to fit rather than clipped after the fact.
+            char nm[wire::kNameLen];
+            snprintf(nm, sizeof(nm), "%.*s_%02d", wire::kNameLen - 5, vh->name, e);
+            strncpy(d.name, nm, wire::kNameLen - 1);
+            strncpy(d.unit, vh->unit, wire::kUnitLen - 1);
 
-        _channels.push_back(d);
-        _varIdx.push_back(i);
+            _channels.push_back(d);
+            _varIdx.push_back(i);
+            _varEntry.push_back(e);
+        }
+        ++expanded;
     }
+
+    // Derived channels, appended after everything iRacing publishes. _varIdx
+    // of -1 marks them; _varEntry then indexes _derived.
+    static const char *const kDerivedNames[kDerivedCount] = {
+        "SessionFlagsLo", "SessionFlagsHi", "CoachYellow", "CoachOutLap", "CoachPolicy"};
+    for (int d = 0; d < kDerivedCount; ++d)
+    {
+        wire::ChannelDesc dc = {};
+        strncpy(dc.name, kDerivedNames[d], wire::kNameLen - 1);
+        strncpy(dc.unit, "rline", wire::kUnitLen - 1);
+        _channels.push_back(dc);
+        _varIdx.push_back(-1);
+        _varEntry.push_back(d);
+    }
+
+    printf("rline: streaming %d channels (%d per-car arrays expanded, %d derived)\n",
+           (int)_channels.size(), expanded, (int)kDerivedCount);
 
     _frame.assign(_channels.size(), 0.0f);
 }
@@ -260,6 +347,28 @@ void TelemetryStreamSystem::pumpIncoming(class ECS::World *world)
             continue;
 
         printf("rline: <- %s\n", line.c_str());
+
+        // COACH|mode=silent - pin how much the corner coach may say, or
+        // COACH|mode=auto to hand it back to the session type. This is the only
+        // way to change what the rig says without rebuilding it, on a machine
+        // that deliberately has no command line.
+        {
+            sessionpolicy::Mode m = sessionpolicy::kFull;
+            bool automatic = false;
+            if (sessionpolicy::parseCommand(line, &m, &automatic))
+            {
+                world->each<CoachPolicyComponentSP>(
+                    [&](ECS::Entity *, ECS::ComponentHandle<CoachPolicyComponentSP> h)
+                    {
+                        CoachPolicyComponent &p = *h.get();
+                        p.pinned = !automatic;
+                        p.pin = m;
+                    });
+                printf("rline: coach mode -> %s\n",
+                       automatic ? "auto" : sessionpolicy::name(m));
+                continue;
+            }
+        }
 
         // SAY|secs=8|text=brake later into turn five
         if (line.rfind("SAY|", 0) == 0 || line.rfind("SAY ", 0) == 0)
@@ -378,8 +487,30 @@ void TelemetryStreamSystem::tick(class ECS::World *world, float deltaTime)
     if (_sock == INVALID_SOCKET)
         return;
 
+    // Fill the derived channels from state the rig still holds exactly. This is
+    // the only place the true SessionFlags integer exists on the analysis path;
+    // once it is a float32 on the wire the caution bits are gone.
+    world->each<EgoStateComponentSP>(
+        [&](ECS::Entity *ent, ECS::ComponentHandle<EgoStateComponentSP> h)
+        {
+            const EgoStateComponent &ego = *h.get();
+            _derived[kDerivedFlagsLo] = (float)(ego.sessionFlags & 0xffffu);
+            _derived[kDerivedFlagsHi] = (float)((ego.sessionFlags >> 16) & 0xffffu);
+            _derived[kDerivedYellow] = sessionpolicy::isYellow(ego.sessionFlags) ? 1.0f : 0.0f;
+            _derived[kDerivedOutLap] = ego.outLap ? 1.0f : 0.0f;
+
+            ECS::ComponentHandle<CoachPolicyComponentSP> p = ent->get<CoachPolicyComponentSP>();
+            if (p.isValid())
+                _derived[kDerivedPolicy] = (float)(int)p.get()->mode;
+        });
+
     for (size_t i = 0; i < _varIdx.size(); ++i)
-        _frame[i] = (float)irsdkClient::instance().getVarDouble(_varIdx[i], 0);
+    {
+        if (_varIdx[i] < 0)
+            _frame[i] = _derived[_varEntry[i]];
+        else
+            _frame[i] = (float)irsdkClient::instance().getVarDouble(_varIdx[i], _varEntry[i]);
+    }
 
     std::vector<char> pkt;
     pkt.reserve(1 + 4 + _frame.size() * 4);

@@ -163,6 +163,7 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
     {
         _acc.assign(line.corners.size(), Acc());
         _lastFault.assign(line.corners.size(), std::string());
+        _raised.assign(line.corners.size(), false);
     }
 
     // A jump in track position means a tow, a reset or a new lap; whatever was
@@ -242,11 +243,18 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
     _lastFault[finished] = f;
     _acc[finished] = Acc();
 
+    // The policy gate. Everything above it runs in every session, so the
+    // measurement and the per-corner memory stay current even while the coach
+    // is saying nothing. Only speaking is suppressed.
+    if (policy == sessionpolicy::kSilent)
+        return none;
+
     char buf[192];
 
     // Warn about what is coming, using what that corner did to him last time.
     const int j = nextActionable(line, pct, finished);
-    if (j >= 0 && !_lastFault[j].empty())
+    if (j >= 0 && !_lastFault[j].empty() &&
+        (policy == sessionpolicy::kFull || (j < (int)_raised.size() && _raised[j])))
     {
         CornerVerdict v;
         v.corner = line.corners[j].n;
@@ -259,6 +267,8 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
         if (v.note == _lastSpoken)
             return none;
         _lastSpoken = v.note;
+        if (j < (int)_raised.size())
+            _raised[j] = true;
         return v;
     }
 
@@ -270,10 +280,17 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
         v.good = true;
         return v;
     }
+    // Retrospective, and therefore first-time by definition - the feed-forward
+    // path above is the one that fires for a corner already known. So this is
+    // exactly the "raising a new corner" case that kConfirm exists to refuse.
+    if (policy != sessionpolicy::kFull)
+        return none;
+
     snprintf(buf, sizeof(buf), "%s, %s", nameOf(line, finished).c_str(), f.c_str());
     v.note = buf;
     if (v.note == _lastSpoken)
         return none;
     _lastSpoken = v.note;
+    _raised[finished] = true;
     return v;
 }

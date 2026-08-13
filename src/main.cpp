@@ -1,6 +1,7 @@
 // rline - reference driving line overlay for iRacing.
 
 #include "build-id.h"
+#include "data-sync-net.h"
 #include "ecs.h"
 #include "refline.h"
 #include "talk-button.h"
@@ -47,6 +48,12 @@ namespace
         // --relay overrides that, so a changed IP never needs a rebuild.
         std::string relay = "192.168.1.161";
         bool noRelay = false;
+        // The rig fetches lap.csv and corner-names.txt from the relay at
+        // startup so the track is not a folder copy any more. Short timeout:
+        // this is in front of the overlay appearing, and a relay that is not
+        // there must cost a moment, not a session.
+        bool noSync = false;
+        int syncTimeoutMs = 3000;
         bool noSpeech = false;
         bool noCornerCoach = false;
         bool noVoiceInput = false;
@@ -120,6 +127,10 @@ namespace
                 o.relay = argv[++i];
             else if (!strcmp(a, "--no-relay"))
                 o.noRelay = true;
+            else if (!strcmp(a, "--no-sync"))
+                o.noSync = true;
+            else if (!strcmp(a, "--sync-timeout") && i + 1 < argc)
+                o.syncTimeoutMs = atoi(argv[++i]);
             else if (!strcmp(a, "--no-speech"))
                 o.noSpeech = true;
             else if (!strcmp(a, "--no-corner-coach"))
@@ -211,6 +222,8 @@ namespace
             "  --relay <host[:port]> coaching relay to stream to; overrides the default\n"
             "                        and rline-relay.txt\n"
             "  --no-relay            do not stream telemetry anywhere\n"
+            "  --no-sync             do not fetch track data from the relay\n"
+            "  --sync-timeout <ms>   how long to wait for it (default 3000)\n"
             "  --no-speech           show coaching notes but do not read them aloud\n"
             "  --no-corner-coach     stop calling out each corner as you exit it\n"
             "  --bind-talk           bind the talk button from the command line;\n"
@@ -359,11 +372,57 @@ int main(int argc, char **argv)
     ent->assign<CoachMessageComponentSP>(new CoachMessageComponent());
     ent->assign<DriverSpeechComponentSP>(new DriverSpeechComponent());
     ent->assign<SpeechQueueComponentSP>(new SpeechQueueComponent());
+    ent->assign<CoachPolicyComponentSP>(new CoachPolicyComponent());
 
     OverlayConfigComponentSP cfg(new OverlayConfigComponent());
     cfg->mph = opt.mph;
     cfg->lateralExaggeration = opt.exaggeration;
     ent->assign<OverlayConfigComponentSP>(cfg);
+
+    // Fetch the track data before anything opens it, so the reference lap and
+    // corner names loaded below are the ones this relay is currently coaching
+    // against. This is what removes the folder copy: the driver installs the
+    // executable, and the data follows it over the wire.
+    //
+    // Deliberately before the world is built and before any system runs, on its
+    // own short-lived socket - the streaming connection is a 60 Hz path and
+    // nothing that transfers megabytes belongs on it. If the relay is down this
+    // costs one connect timeout and the rig runs on its cached files.
+    if (!opt.relay.empty() && !opt.noRelay && !opt.noSync)
+    {
+        std::string host = opt.relay;
+        int port = wire::kDefaultPort;
+        const size_t colon = host.find(':');
+        if (colon != std::string::npos)
+        {
+            port = atoi(host.c_str() + colon + 1);
+            host = host.substr(0, colon);
+        }
+
+        std::string dir = resolveBesideExe("");
+        while (!dir.empty() && (dir.back() == '\\' || dir.back() == '/'))
+            dir.pop_back();
+
+        std::string detail;
+        const datasyncnet::Result sync =
+            datasyncnet::fetch(host, port, dir, opt.syncTimeoutMs, &detail);
+
+        if (!sync.contacted)
+        {
+            // Not an error worth stopping for, but worth saying plainly: this
+            // is the state where the rig is about to coach from whatever was
+            // last copied to it, which is the failure the feature removes.
+            logLine("rline: no relay at %s:%d for track data, using the cached files",
+                    host.c_str(), port);
+        }
+        else
+        {
+            logLine("rline: track data - %d updated, %d already current, %d failed",
+                    sync.updated, sync.current, sync.failed);
+            if (!detail.empty())
+                logLine("%s", detail.c_str());
+        }
+    }
 
     RefLineComponentSP ref(new RefLineComponent());
     {

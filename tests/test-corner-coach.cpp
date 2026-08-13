@@ -94,6 +94,23 @@ namespace
         int easier = 0, trail = 0, speed = 0, good = 0, total = 0;
     };
 
+    // Notes actually spoken, which is what the policy governs. `good` verdicts
+    // carry no note and are not speech.
+    int spoken(CornerCoach &coach, const RefLine &line, const std::vector<Sample> &drive)
+    {
+        int n = 0;
+        for (const Sample &s : drive)
+        {
+            if (s.onTrack < 0.5f)
+                continue;
+            CornerVerdict v = coach.update(line, s.pct, s.speed, s.brake, s.throttle,
+                                           s.steer, -1.0f);
+            if (!v.note.empty())
+                ++n;
+        }
+        return n;
+    }
+
     Tally replay(const RefLine &line, const std::vector<Sample> &drive, bool show)
     {
         CornerCoach coach;
@@ -330,6 +347,62 @@ int main(int argc, char **argv)
             printf("       %d judged: %d clean, %d easier, %d trail, %d speed\n",
                    t.total, t.good, t.easier, t.trail, t.speed);
             check(t.total >= 6, "a full lap judged most corners");
+        }
+    }
+
+    printf("\n-- session policy: what may be spoken --\n");
+    {
+        // A lap bad enough to draw notes in every mode that allows any.
+        std::vector<Sample> bad;
+        for (const RefPoint &p : line.pts)
+            bad.push_back({p.pct, p.speed * 0.90f, p.brake > 0.05f ? 1.0f : 0.0f,
+                           p.throttle, 1.0f, p.steer * 1.6f});
+
+        {
+            CornerCoach c;
+            c.policy = sessionpolicy::kFull;
+            spoken(c, line, bad); // lap 1 warms the per-corner memory
+            check(spoken(c, line, bad) > 0, "full mode speaks on a bad lap");
+        }
+
+        {
+            CornerCoach c;
+            c.policy = sessionpolicy::kSilent;
+            const int a = spoken(c, line, bad);
+            const int b = spoken(c, line, bad);
+            check(a == 0 && b == 0, "silent mode says nothing at all, on any lap");
+
+            // The reason silence is safe to leave on for a whole race: the
+            // measurement never stopped, so the first lap after it lifts is
+            // already feed-forward rather than a wasted reconnaissance lap.
+            c.policy = sessionpolicy::kFull;
+            check(spoken(c, line, bad) > 0,
+                  "state stayed warm through silence - it speaks immediately after");
+        }
+
+        {
+            CornerCoach c;
+            c.policy = sessionpolicy::kConfirm;
+            const int a = spoken(c, line, bad);
+            const int b = spoken(c, line, bad);
+            check(a == 0 && b == 0,
+                  "confirm mode never raises a corner it has not raised before");
+        }
+
+        {
+            // The warmup case, which is the one that has to work on race day:
+            // corners established in practice are still confirmed, and nothing
+            // new is introduced ten minutes before the start.
+            CornerCoach c;
+            c.policy = sessionpolicy::kFull;
+            spoken(c, line, bad);
+            const int established = spoken(c, line, bad);
+            c.policy = sessionpolicy::kConfirm;
+            const int confirmed = spoken(c, line, bad);
+            check(established > 0 && confirmed > 0,
+                  "confirm mode still speaks corners already established");
+            check(confirmed <= established,
+                  "confirm mode speaks no more than full mode did");
         }
     }
 

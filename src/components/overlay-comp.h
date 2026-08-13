@@ -5,6 +5,7 @@
 #include "../ecs.h"
 #include "../grip-curve.h"
 #include "../refline.h"
+#include "../session-policy.h"
 #include "../speech-queue.h"
 
 #include <memory>
@@ -19,6 +20,14 @@ struct EgoStateComponent
 
     bool connected = false;
     bool onTrack = false;
+
+    // Session context, read for the coaching policy rather than the overlay.
+    // What may be said depends on which session is running far more than on
+    // anything in the driving - see src/session-policy.h.
+    std::string sessionType; // "Practice", "Race", "Warmup", ... from the YAML
+    unsigned sessionFlags = 0;
+    bool onPitRoad = false;
+    bool outLap = false; // out of the pits, first flying lap not yet started
 
     float pct = 0;   // LapDistPct
     float speed = 0; // m/s
@@ -129,7 +138,29 @@ struct CoachMessageComponent
     bool speakPending = false; // set when a new note arrives, cleared once spoken
 };
 ECS_DEFINE_TYPE(CoachMessageComponent);
+
 typedef std::shared_ptr<CoachMessageComponent> CoachMessageComponentSP;
+
+// How much the corner coach is allowed to say, and whether the relay has
+// pinned it.
+//
+// Normally the mode follows the session type automatically, which is the point:
+// nobody has to remember to silence the coach before a race, and the rig has no
+// command line to do it from. The override exists for the two cases automation
+// cannot cover - a session iRacing names something unexpected, and the driver
+// asking for quiet mid-stint - and is set by a COACH|mode= line from the relay,
+// so it needs no rebuild and no copy onto the rig.
+struct CoachPolicyComponent
+{
+    ECS_DECLARE_TYPE;
+
+    sessionpolicy::Mode mode = sessionpolicy::kFull;
+    bool pinned = false;      // a relay override is in force
+    sessionpolicy::Mode pin = sessionpolicy::kFull;
+    std::string lastReason;   // for the panel and the log
+};
+ECS_DEFINE_TYPE(CoachPolicyComponent);
+typedef std::shared_ptr<CoachPolicyComponent> CoachPolicyComponentSP;
 
 // Everything waiting to be said, in the order it will be said.
 //

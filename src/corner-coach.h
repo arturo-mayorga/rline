@@ -2,6 +2,7 @@
 #define corner_coach_h_
 
 #include "refline.h"
+#include "session-policy.h"
 
 #include <string>
 #include <vector>
@@ -68,6 +69,16 @@ public:
     // speaking its own numbering sends the driver to the wrong piece of road.
     std::vector<std::string> names;
 
+    // How much may be spoken. Set from the session type each tick by
+    // CornerCoachSystem, or pinned by a COACH|mode= line from the relay.
+    //
+    // Only *emission* is gated. The accumulators keep measuring and each
+    // corner's remembered fault keeps updating whatever the mode, so coming out
+    // of a race into practice has warm feed-forward state instead of a wasted
+    // lap - and so the analysis machine still receives telemetry describing a
+    // corner the rig chose not to mention.
+    sessionpolicy::Mode policy = sessionpolicy::kFull;
+
     // Reads one label per line, skipping blanks and # comments. Returns false
     // if the file cannot be opened; a missing file is not an error, the coach
     // just falls back to detected numbers.
@@ -103,6 +114,11 @@ private:
 
     std::vector<Acc> _acc;
     std::vector<std::string> _lastFault; // per corner, from the last time through
+    // Corners this coach has already raised out loud. In kConfirm - the warmup,
+    // and every out-lap - a corner that has never been mentioned may not be
+    // mentioned now: ten minutes before a race is the worst moment to hand him
+    // a corner he was not already working on.
+    std::vector<bool> _raised;
     std::string _lastSpoken;             // to avoid saying the same thing twice running
     float _learnedPeak = -1;
     float _lastPct = -1;

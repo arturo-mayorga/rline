@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "../src/build-id.h"
+#include "../src/data-sync.h"
 #include "../src/voice-line.h"
 #include "../src/wire.h"
 
@@ -103,6 +104,125 @@ namespace
     const char *kExpectTrack = "";
 #endif
 
+    // Where the files the rig may fetch live. Beside relay.exe, which is where
+    // CMake already copies the pair chosen by RLINE_TRACK - so what the relay
+    // serves and what this machine built cannot disagree.
+    std::string g_dataDir;
+
+    std::string besideExe()
+    {
+        char buf[MAX_PATH] = {};
+        const DWORD n = GetModuleFileNameA(NULL, buf, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH)
+            return ".";
+        std::string p(buf, n);
+        const size_t slash = p.find_last_of("\\/");
+        return slash == std::string::npos ? std::string(".") : p.substr(0, slash);
+    }
+
+    bool sendAllBytes(SOCKET s, const char *data, int len)
+    {
+        int sent = 0;
+        while (sent < len)
+        {
+            const int n = send(s, data + sent, len - sent, 0);
+            if (n <= 0)
+                return false;
+            sent += n;
+        }
+        return true;
+    }
+
+    bool sendLine(SOCKET s, const std::string &line)
+    {
+        const std::string withNl = line + "\n";
+        return sendAllBytes(s, withNl.data(), (int)withNl.size());
+    }
+
+    bool readFileBytes(const std::string &path, std::string *out)
+    {
+        FILE *f = fopen(path.c_str(), "rb");
+        if (!f)
+            return false;
+        std::string body;
+        char buf[65536];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+            body.append(buf, n);
+        fclose(f);
+        *out = body;
+        return true;
+    }
+
+    // A rig asking what its track data should be, on its own short-lived
+    // connection. Serving this is the whole reason the driver no longer copies
+    // a folder: the executable is still his to install, the data is ours to
+    // push.
+    //
+    // Deliberately synchronous and inline in the accept loop. It happens once
+    // at rig startup, before any telemetry connection exists, so there is
+    // nothing for it to block - and keeping it single-threaded means it cannot
+    // interleave with the 60 Hz path at all.
+    void serveSync(SOCKET s)
+    {
+        uint16_t version = 0;
+        uint16_t lineLen = 0;
+        if (!recvAll(s, (char *)&version, 2) || !recvAll(s, (char *)&lineLen, 2))
+            return;
+        if (lineLen == 0 || lineLen > wire::kMaxTextLen)
+            return;
+
+        std::string line(lineLen, '\0');
+        if (!recvAll(s, &line[0], lineLen))
+            return;
+
+        std::vector<datasync::FileState> want;
+        if (!datasync::parseWant(line, &want))
+        {
+            printf("relay: <- unparseable sync request, ignored\n");
+            return;
+        }
+
+        printf("relay: <- rig asking for track data (protocol %u)\n", (unsigned)version);
+
+        for (const datasync::FileState &f : want)
+        {
+            const std::string path = g_dataDir + "\\" + f.name;
+
+            std::string body;
+            if (!readFileBytes(path, &body) || body.empty())
+            {
+                // The relay genuinely has not got it. Say so rather than
+                // sending nothing: the rig keeps whatever it had cached, and
+                // the reason is visible in both logs.
+                printf("relay:    %s - not here, rig keeps its own\n", f.name.c_str());
+                if (!sendLine(s, datasync::noneLine(f.name)))
+                    return;
+                continue;
+            }
+
+            const std::string hash =
+                buildid::hex8(buildid::hashBytes(body.data(), body.size()));
+
+            if (hash == f.hash)
+            {
+                printf("relay:    %s - already current [%s]\n", f.name.c_str(), hash.c_str());
+                if (!sendLine(s, datasync::sameLine(f.name)))
+                    return;
+                continue;
+            }
+
+            printf("relay:    %s - sending %zu bytes [%s], rig had [%s]\n",
+                   f.name.c_str(), body.size(), hash.c_str(),
+                   f.hash.empty() ? "none" : f.hash.c_str());
+
+            if (!sendLine(s, datasync::dataLine(f.name, hash, (uint32_t)body.size())))
+                return;
+            if (!sendAllBytes(s, body.data(), (int)body.size()))
+                return;
+        }
+    }
+
     // The rig's self-report, left where it can be read without scraping the
     // log. Truncated each connection: this is current state, not a history.
     void writeRigBuild(const std::string &line, const std::string &report)
@@ -125,14 +245,21 @@ int main(int argc, char **argv)
             g_dir = argv[++i];
         else if (!strcmp(argv[i], "--port") && i + 1 < argc)
             port = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--data") && i + 1 < argc)
+            g_dataDir = argv[++i];
         else if (!strcmp(argv[i], "--help"))
         {
-            printf("relay [--dir <path>] [--port <n>]\n"
+            printf("relay [--dir <path>] [--port <n>] [--data <path>]\n"
                    "  Receives rline telemetry and writes <dir>/laps/lap-NNNN.csv\n"
-                   "  plus <dir>/live.csv. Lines typed here are sent to the rig.\n");
+                   "  plus <dir>/live.csv. Lines typed here are sent to the rig.\n"
+                   "  Serves lap.csv and corner-names.txt to a rig that asks for\n"
+                   "  them, from --data (default: beside relay.exe).\n");
             return 0;
         }
     }
+
+    if (g_dataDir.empty())
+        g_dataDir = besideExe();
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -164,6 +291,22 @@ int main(int argc, char **argv)
 
     printf("relay: listening on port %d, writing to %s\n", port, g_dir.c_str());
 
+    // What a rig will be given if it asks. Printed at startup rather than only
+    // on request, because the failure this feature exists to prevent is a
+    // wrong-track file nobody looked at - and an empty or missing pair here is
+    // the one state where the rig silently keeps whatever it already had.
+    printf("relay: serving track data from %s\n", g_dataDir.c_str());
+    for (int i = 0; i < datasync::kSyncFileCount; ++i)
+    {
+        const std::string name = datasync::kSyncFiles[i];
+        const std::string hash = buildid::hashFile(g_dataDir + "\\" + name);
+        if (hash.empty())
+            printf("relay:   *** %s MISSING - a rig asking for it keeps its own ***\n",
+                   name.c_str());
+        else
+            printf("relay:   %s [%s]\n", name.c_str(), hash.c_str());
+    }
+
     for (;;)
     {
         printf("relay: waiting for the rig...\n");
@@ -178,8 +321,27 @@ int main(int argc, char **argv)
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&handshakeTimeout,
                    sizeof(handshakeTimeout));
 
+        // Two kinds of client arrive on this port and the first four bytes say
+        // which. A telemetry connection opens with wire::kMagic and lasts the
+        // session; a data-sync connection opens with datasync::kMagic, is
+        // served in a few hundred milliseconds at rig startup, and closes.
         wire::HelloHeader h = {};
-        if (!recvAll(s, (char *)&h, sizeof(h)) || h.magic != wire::kMagic)
+        if (!recvAll(s, (char *)&h.magic, sizeof(h.magic)))
+        {
+            printf("relay: bad handshake (or silent client), dropping\n");
+            closesocket(s);
+            continue;
+        }
+
+        if (h.magic == datasync::kMagic)
+        {
+            serveSync(s);
+            closesocket(s);
+            continue;
+        }
+
+        if (h.magic != wire::kMagic ||
+            !recvAll(s, (char *)&h.version, sizeof(h) - sizeof(h.magic)))
         {
             printf("relay: bad handshake (or silent client), dropping\n");
             closesocket(s);

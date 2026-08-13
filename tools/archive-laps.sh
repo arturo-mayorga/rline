@@ -32,14 +32,21 @@ POLL=1
 SETTLE=3
 MINSZ=4000000
 SRC=/mnt/c/rline-coach/laps
-DEST=/mnt/c/rline-coach/archive/live
-QCLOG=/mnt/c/rline-coach/archive/qc.log
+# Archive off C: - a lap is ~7 MB and 1377 of them filled the system drive to
+# 237 MB free on 2026-08-11. relay then tore its writes: rows lost mid-file, so
+# the sample rate read 36-57 Hz instead of 60 and LapDistPct ran to 4033 where
+# it can only be 0..1. lap-qc.py called those laps SPLICE, which is the closest
+# verdict it has but not the cause. One lap of that whole session survived.
+DEST=${DEST:-/mnt/e/games/live}
+QCLOG=${QCLOG:-/mnt/e/games/qc.log}
 RELAYLOG=${RELAYLOG:-/mnt/c/Users/amayorga/rline-build/relay-out.txt}
 QC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lap-qc.py"
 
 cd "$SRC" || exit 1
 mkdir -p "$DEST" "$(dirname "$QCLOG")"
 declare -A seen
+# Size at the previous poll, so the scan can tell "idle" from "still growing".
+declare -A lastsz
 
 # Copy one lap file if we do not already have its exact contents.
 take()
@@ -108,8 +115,23 @@ while true; do
 
   # Safety net: anything that has been sitting still long enough, in case the
   # relay log is unavailable or a lap was written before this started.
+  #
+  # The settle timer alone is NOT enough on /mnt/c. mtime under drvfs updates
+  # lazily, so a file relay is actively appending to can read as three seconds
+  # idle - and on 2026-08-12 that copied a growing 50 MB lap-0000 one hundred
+  # and nineteen times, about 3 GB in ten minutes. A long garage session
+  # accumulates into one enormous lap-0 file, and the per-car channels doubled
+  # every file's width, so what was wasteful became expensive.
+  #
+  # Size between consecutive polls is the reliable signal: unchanged for a
+  # whole poll means relay is not writing to it right now.
   for f in lap-*.csv; do
     [ -f "$f" ] || continue
+    sz=$(stat -c%s "$f" 2>/dev/null) || continue
+    prev=${lastsz[$f]:-}
+    lastsz[$f]=$sz
+    [ -n "$prev" ] && [ "$prev" = "$sz" ] || continue
+
     m=$(stat -c%Y "$f" 2>/dev/null) || continue
     now=$(date +%s)
     [ $((now-m)) -ge "$SETTLE" ] || continue

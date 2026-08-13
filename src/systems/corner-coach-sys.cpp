@@ -2,6 +2,8 @@
 
 #include "../components/overlay-comp.h"
 
+#include <cstdio>
+
 namespace
 {
     // A call must not land on top of the braking countdown for the next
@@ -51,6 +53,35 @@ void CornerCoachSystem::tick(class ECS::World *world, float deltaTime)
             {
                 _coach.reset();
                 return;
+            }
+
+            // What may be said, decided fresh every tick. Automatic from the
+            // session type, unless the relay has pinned it. Recomputed rather
+            // than latched so a caution, a pit entry or a session change takes
+            // effect on the next corner rather than the next lap.
+            {
+                sessionpolicy::Mode m = sessionpolicy::decide(
+                    ego.sessionType, ego.onPitRoad, ego.outLap, ego.sessionFlags);
+
+                ECS::ComponentHandle<CoachPolicyComponentSP> polH =
+                    ent->get<CoachPolicyComponentSP>();
+                if (polH.isValid())
+                {
+                    CoachPolicyComponent &p = *polH.get();
+                    if (p.pinned)
+                        m = p.pin;
+                    if (m != p.mode)
+                    {
+                        printf("rline: coach %s -> %s (session \"%s\"%s%s%s)\n",
+                               sessionpolicy::name(p.mode), sessionpolicy::name(m),
+                               ego.sessionType.c_str(),
+                               ego.onPitRoad ? ", pits" : "",
+                               sessionpolicy::isYellow(ego.sessionFlags) ? ", yellow" : "",
+                               p.pinned ? ", pinned" : "");
+                        p.mode = m;
+                    }
+                }
+                _coach.policy = m;
             }
 
             const CornerVerdict v = _coach.update(refH.get()->line, ego.pct,

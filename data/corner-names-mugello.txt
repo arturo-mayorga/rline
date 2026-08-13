@@ -2,42 +2,59 @@
 # MUGELLO. Deploy as corner-names.txt beside the exe, alongside the Mugello
 # reference lap deployed as lap.csv. Road America's mapping is corner-names.txt.
 #
+# THESE ARE TRACK TURN NUMBERS, NOT DETECTOR INDICES. The driver asked for
+# numbers on 2026-08-11 - "I can't keep track of corner names" - and the only
+# numbers that mean anything to him are the ones on the circuit map. The
+# detector's own 1..6 must never be spoken: its corner 5 is turn twelve, and an
+# entire session was once coached on detector numbering, sending him to the
+# wrong piece of road every single time.
+#
+# So each line below is the turn number where that detected corner BEGINS -
+# specifically its turn-in, because that is where the braking cue applies.
+#
 # The detector finds SIX corners across fifteen numbered turns here - far
 # coarser than Road America's eleven of sixteen, because most of Mugello is
-# fast enough that the detector never sees a corner at all. Every name below
+# fast enough that the detector never sees a corner at all. Every entry below
 # therefore stands for a stretch of road, not a single turn. What each one
-# swallows is written next to it; say the name, never the number.
+# swallows is written next to it, and the number spoken is the FIRST turn of
+# that stretch - so "turn ten" can mean a fault that is really at turn eleven.
+# Where a fault is known to sit at the far end of a span, say the exact turn
+# from the relay rather than relying on this file.
 #
 # Anchors, both ends of the range:
-#   detected 1 is the only corner braked at 0.95 - San Donato, the slowest
+#   detected 1 is the only corner braked at 0.95 - turn one, the slowest
 #   detected 3 is the only corner with essentially no brake (0.13) - and it
-#     covers the whole flat-out block from Casanova to Arrabbiata 2
+#     covers the whole flat-out block from turn six to turn nine
 #
-# SAPI is an English voice. If Correntaio, Scarperia or Bucine come out
-# mangled, swap in the phonetic spellings on the right and redeploy:
-#   Scarperia   -> Scar peh ree a
-#   Correntaio  -> Cor ren tie oh
-#   Bucine      -> Boo chee nay
-#   Materassi   -> Mata rassi
+# Written as words, not digits: SAPI reads "10" in this context as "ten" but
+# reads a bare digit inconsistently between voices, and a corner number heard
+# wrong is the one error this file exists to prevent.
 
-San Donato
-Materassi
-Casanova
-Scarperia
-Correntaio
-Bucine
+turn one
+turn four
+turn six
+turn ten
+turn twelve
+turn fifteen
 
-# detected  turn-in  apex   vmin  peakBrk  covers
-#    1        647 m   734 m  129    0.95   T1 San Donato, T2 Luco, T3 Poggio Secco
-#    2       1419 m  1624 m  196    0.40   T4 Materassi, T5 Borgo San Lorenzo
-#    3       1868 m  1972 m  229    0.13   T6 Casanova, T7 Savelli, T8+T9 Arrabbiata
-#    4       2969 m  3031 m  147    0.88   T10 Scarperia, T11 Palagio
-#    5       3494 m  3617 m  133    0.78   T12 Correntaio, T13+T14 Biondetti
-#    6       4344 m  4479 m  153    0.81   T15 Bucine
+# detected  turn-in  apex   vmin  peakBrk  spoken        covers
+#    1        647 m   734 m  129    0.95   turn one      T1 San Donato, T2 Luco, T3 Poggio Secco
+#    2       1419 m  1624 m  196    0.40   turn four     T4 Materassi, T5 Borgo San Lorenzo
+#    3       1868 m  1972 m  229    0.13   turn six      T6 Casanova, T7 Savelli, T8+T9 Arrabbiata
+#    4       2969 m  3031 m  147    0.88   turn ten      T10 Scarperia, T11 Palagio
+#    5       3494 m  3617 m  133    0.78   turn twelve   T12 Correntaio, T13+T14 Biondetti
+#    6       4344 m  4479 m  153    0.81   turn fifteen  T15 Bucine
 #
-# Detected 2 is the one imperfect name: the braking and turn-in are Materassi,
-# but the apex and the minimum speed land at Borgo San Lorenzo. It is named for
-# the braking because the brake release is what this driver is cued on.
+# Detected 2 is the one imperfect entry: the braking and turn-in are Materassi
+# (T4), but the apex and the minimum speed land at Borgo San Lorenzo (T5). It is
+# numbered for the braking because the brake release is what this driver is cued
+# on.
+#
+# Detected 4 is the one to watch. Its brake stabbing on 2026-08-11 was at T11
+# Palagio, the far end of the span, while this file says "turn ten" - which is
+# where the cue points him. Splitting this corner in the detector would fix it
+# properly; until then, name T11 explicitly from the relay when the fault is
+# there.
 #
 # Detected 3 is the dangerous one. Its span runs 0.298-0.531 - a quarter of the
 # lap, all of it aero-limited and taken at 250+ km/h on a trace of brake. Any

@@ -17,6 +17,9 @@ add_definitions(-D_UNICODE -DUNICODE -DNOMINMAX -DWIN32_LEAN_AND_MEAN
 add_executable(rline
     src/main.cpp
     src/build-id.cpp
+    src/data-sync.cpp
+    src/session-policy.cpp
+    src/data-sync-net.cpp
     src/refline.cpp
     src/event-cue.cpp
     src/corner-coach.cpp
@@ -93,6 +96,14 @@ add_custom_command(TARGET rline POST_BUILD
             "${RLINE_NAMES}"
             "$<TARGET_FILE_DIR:rline>/corner-names.txt")
 
+# Which per-car arrays the rig should stream. Track-independent, so it is not
+# part of the RLINE_TRACK pair. Lives beside the exe like the others, and syncs
+# from the relay, so changing what is streamed needs no rebuild.
+add_custom_command(TARGET rline POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/car-channels.txt"
+            "$<TARGET_FILE_DIR:rline>/car-channels.txt")
+
 # ------------------------------------------------------------------- the tests
 #
 # The geometry, the lateral reconstruction, the overlay's draw output and the
@@ -132,6 +143,7 @@ add_executable(test-grip-curve
 
 add_executable(test-corner-coach
     tests/test-corner-coach.cpp
+    src/session-policy.cpp
     src/corner-coach.cpp
     src/grip-curve.cpp
     src/refline.cpp
@@ -164,6 +176,20 @@ add_executable(test-talk-button
     src/talk-button.cpp
 )
 
+# How much the coach may say, per session. The only thing between a corner cue
+# and a driver mid-overtake.
+add_executable(test-session-policy
+    tests/test-session-policy.cpp
+    src/session-policy.cpp
+)
+
+# What may be written over the reference lap the coaching is measured against.
+add_executable(test-data-sync
+    tests/test-data-sync.cpp
+    src/data-sync.cpp
+    src/build-id.cpp
+)
+
 # Built and tested, but deliberately not yet loaded by rline - see the header.
 add_executable(test-voice-grammar
     tests/test-voice-grammar.cpp
@@ -185,6 +211,7 @@ add_executable(test-speech-queue
 # machine, so it can be changed freely without touching the rig.
 add_executable(relay
     tools/relay.cpp
+    src/data-sync.cpp
     src/build-id.cpp
     src/voice-line.cpp
 )
@@ -203,7 +230,7 @@ add_executable(irdump
 # Static CRT: every resulting exe runs on a clean Windows install with no
 # Visual C++ redistributable and no dev tools.
 if(MSVC)
-    foreach(t rline relay test-build-id test-refline test-overlay test-corner-trace test-lateral test-event-cue test-corner-coach test-grip-curve test-voice-line test-talk-button test-voice-grammar test-speech-queue irdump)
+    foreach(t rline relay test-session-policy test-data-sync test-build-id test-refline test-overlay test-corner-trace test-lateral test-event-cue test-corner-coach test-grip-curve test-voice-line test-talk-button test-voice-grammar test-speech-queue irdump)
         set_property(TARGET ${t} PROPERTY
                      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     endforeach()
