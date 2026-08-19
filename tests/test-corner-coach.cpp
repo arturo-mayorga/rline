@@ -350,6 +350,81 @@ int main(int argc, char **argv)
         }
     }
 
+    printf("\n-- the coast cue, and its fence --\n");
+    {
+        // A driver who brakes about right but lets the brake go early and then
+        // freewheels a long way before picking the throttle back up. This is
+        // what the 2026-08-12 race data looks like: at reference minimum speed
+        // and still losing time to dead distance.
+        std::vector<Sample> coaster;
+        for (const RefPoint &p : line.pts)
+        {
+            float b = p.brake, t = p.throttle;
+            for (const RefCorner &rc : line.corners)
+            {
+                if (rc.releasePct < 0 || rc.peakBrake < 0.25f)
+                    continue;
+                if (p.pct < rc.pctEntry || p.pct > rc.pctExit)
+                    continue;
+                // Let the brake go ~60 m before the reference does...
+                if (p.pct > rc.releasePct - 0.012f)
+                    b = 0.0f;
+                // ...and do not pick the throttle back up until well past the
+                // apex, so the gap between the pedals is long.
+                if (p.pct < rc.pctApex + 0.010f)
+                    t = 0.0f;
+            }
+            coaster.push_back({p.pct, p.speed, b, t, 1.0f, p.steer});
+        }
+
+        // A brake-dragger: the fault the removed cues were removed for. Full
+        // pressure carried well past where the reference let go.
+        std::vector<Sample> dragger;
+        for (const RefPoint &p : line.pts)
+        {
+            float b = p.brake > 0.05f ? 1.0f : 0.0f;
+            // keep the brake on into the throttle phase
+            if (p.throttle > 0.2f && p.throttle < 0.9f)
+                b = 0.5f;
+            dragger.push_back({p.pct, p.speed * 0.95f, b, p.throttle, 1.0f, p.steer});
+        }
+
+        int coastCue = 0, dragCoastCue = 0, dragSooner = 0;
+        {
+            CornerCoach c;
+            for (int lap = 0; lap < 2; ++lap)
+                for (const Sample &s : coaster)
+                {
+                    CornerVerdict v = c.update(line, s.pct, s.speed, s.brake, s.throttle,
+                                               s.steer, -1.0f);
+                    if (v.note.find("ease the brake off gradually") != std::string::npos)
+                        ++coastCue;
+                }
+        }
+        {
+            CornerCoach c;
+            for (int lap = 0; lap < 2; ++lap)
+                for (const Sample &s : dragger)
+                {
+                    CornerVerdict v = c.update(line, s.pct, s.speed, s.brake, s.throttle,
+                                               s.steer, -1.0f);
+                    if (v.note.find("ease the brake off gradually") != std::string::npos)
+                        ++dragCoastCue;
+                    if (v.note.find("off the brake sooner") != std::string::npos)
+                        ++dragSooner;
+                }
+        }
+
+        check(coastCue > 0, "a long coast after an early release does draw the cue");
+
+        // THE test. "Trail the brake in further" was removed because it told
+        // this driver to do more of his worst habit; the whole justification
+        // for reinstating anything like it is that it cannot reach him.
+        check(dragCoastCue == 0,
+              "a brake-dragger NEVER draws the coast cue");
+        check(dragSooner > 0, "a brake-dragger is still told off the brake sooner");
+    }
+
     printf("\n-- session policy: what may be spoken --\n");
     {
         // A lap bad enough to draw notes in every mode that allows any.

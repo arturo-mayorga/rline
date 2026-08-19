@@ -61,6 +61,27 @@ public:
     // hands looks unthreatened when it is the most loaded corner on the lap.
     float aeroPeakBrake = 0.25f;
 
+    // How much further than the reference he may freewheel between releasing
+    // the brake and picking up the throttle before it is worth saying so.
+    //
+    // This is the one cue that comes close to the two that were removed, and it
+    // is fenced accordingly - see check 3 in the .cpp. "Trail the brake in
+    // further" was removed because it told this driver to do MORE of his
+    // dominant fault, which in 2026-08 was releasing long and light. By
+    // 2026-08-12 that had inverted: he releases early and short, and coasts
+    // 71-97 m into corners where the reference coasts 10-19 m, while already at
+    // or above its minimum speed. The lost time is dead distance, not entry
+    // speed, and no other cue in the vocabulary addresses it.
+    //
+    // So this fires ONLY when the release is measurably EARLY. A late release
+    // is caught first and told the opposite, which makes it impossible for this
+    // to ever be the advice given to a brake-dragger.
+    float coastExcessM = 35.0f;
+    // Below this the brake is off, above it the throttle is on. Deliberately
+    // not zero: a trailing foot and an idle blip are not driving inputs.
+    float coastBrakeOff = 0.05f;
+    float coastThrottleOn = 0.20f;
+
     // What each corner is called out loud - the whole subject phrase, so a
     // corner with a name rather than a number ("The carousel") reads properly.
     // Index i names line.corners[i]; empty falls back to the detected number.
@@ -92,6 +113,14 @@ public:
 
     void reset();
 
+    // Metres the reference itself freewheels between releasing the brake and
+    // picking the throttle back up. Measured from the reference's own points
+    // rather than stored on RefCorner, so no reference lap needs regenerating
+    // and nothing that reads RefCorner changes. Negative when unknowable.
+    // Public because it is the number the coast cue is judged against, and a
+    // threshold nobody can inspect is a threshold nobody can trust.
+    float refCoastM(const RefLine &line, int idx) const;
+
     // Index of a corner currently being measured, or -1.
     int currentCorner() const;
 
@@ -110,6 +139,7 @@ private:
         float peakBrake = 0;
         float peakSteer = 0;
         float releasePct = -1;
+        float throttleOnPct = -1; // first real throttle after the brake came off
     };
 
     std::vector<Acc> _acc;

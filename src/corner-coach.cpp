@@ -97,6 +97,29 @@ int CornerCoach::nextActionable(const RefLine &line, float pct, int from) const
     return -1;
 }
 
+float CornerCoach::refCoastM(const RefLine &line, int idx) const
+{
+    const RefCorner &rc = line.corners[idx];
+    if (rc.releasePct < 0)
+        return -1.0f; // the reference does not brake here at all
+
+    // First real throttle after the reference let the brake go, within the
+    // corner. Searched forward from the release rather than from entry, or the
+    // approach - which is flat out - answers immediately.
+    for (const RefPoint &p : line.pts)
+    {
+        if (p.pct < rc.releasePct)
+            continue;
+        if (p.pct > rc.pctExit)
+            break;
+        if (p.throttle > coastThrottleOn)
+            return gapM(p.pct, rc.releasePct, line.length);
+    }
+    // Brake off and never back on the throttle before the exit: the reference
+    // carries the brake essentially to the apex, so its coast is nil.
+    return 0.0f;
+}
+
 std::string CornerCoach::fault(const RefLine &line, int idx) const
 {
     const RefCorner &rc = line.corners[idx];
@@ -116,13 +139,46 @@ std::string CornerCoach::fault(const RefLine &line, int idx) const
     if (rc.peakBrake > 0.05f && a.peakBrake > rc.peakBrake + brakeOverPressure)
         return "easier on the brake";
 
-    // 3. Past the driver's own measured grip peak the wheel has stopped
+    // 3. Freewheeling between the pedals. The corner is at the right speed and
+    //    still losing time, because a stretch of it is spent neither braking
+    //    nor accelerating.
+    //
+    //    Fenced hard, because this is the closest thing in the vocabulary to
+    //    "trail the brake in further", which was removed for telling this
+    //    driver to do more of his dominant fault:
+    //
+    //      - a LATE release is caught by check 1 above and told the opposite,
+    //        so a brake-dragger can never reach this branch;
+    //      - it additionally requires the release to be measurably EARLY, so
+    //        being merely near the reference is not enough;
+    //      - the corner must be one the reference genuinely brakes for;
+    //      - and the excess coast must be large, not marginal.
+    //
+    //    The phrasing names the RATE of release, never its duration or its
+    //    pressure, so it cannot be heard as "brake harder" or "brake longer" -
+    //    which is how "still deep on the brake" went wrong in 2026-08-04.
+    if (rc.peakBrake >= aeroPeakBrake && a.releasePct >= 0 && rc.releasePct >= 0 &&
+        a.throttleOnPct >= 0)
+    {
+        const float refCoast = refCoastM(line, idx);
+        // gapM(a, b) is metres from b to A - the order reads backwards and has
+        // now produced three sign bugs in one evening. Throttle-on is AFTER the
+        // release, so it goes first.
+        const float hisCoast = gapM(a.throttleOnPct, a.releasePct, line.length);
+        const float earlyM = gapM(rc.releasePct, a.releasePct, line.length);
+
+        if (refCoast >= 0.0f && earlyM > releaseLateM &&
+            hisCoast > refCoast + coastExcessM)
+            return "ease the brake off gradually";
+    }
+
+    // 4. Past the driver's own measured grip peak the wheel has stopped
     //    working, so the instruction is to unwind - not to find more speed and
     //    not to compare against someone else's steering trace.
     if (_learnedPeak > 0.05f && a.peakSteer > _learnedPeak)
         return "too much lock, unwind";
 
-    // 4. A plain speed deficit, and only once the wheel is known to be inside
+    // 5. A plain speed deficit, and only once the wheel is known to be inside
     //    the grip peak. Asking for more speed while the front is already
     //    saturated is the advice that has made this driver slower before.
     //
@@ -153,7 +209,6 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
                                   float brake, float throttle, float steer,
                                   float learnedPeakSteer)
 {
-    (void)throttle;
     CornerVerdict none;
 
     if (line.corners.empty())
@@ -221,6 +276,12 @@ CornerVerdict CornerCoach::update(const RefLine &line, float pct, float speed,
                 if (brake > kBrakeOn)
                     a.releasePct = pct;
             }
+            // Where the throttle came back after the brake let go. Only counted
+            // once the brake is genuinely off, so a brake-and-throttle overlap
+            // on the way in is not mistaken for the end of a coast.
+            if (a.throttleOnPct < 0 && a.releasePct >= 0 && brake <= coastBrakeOff &&
+                throttle > coastThrottleOn && pct > a.releasePct)
+                a.throttleOnPct = pct;
             // Set after accumulating, so the apex sample itself is included -
             // the reference's loop is inclusive of the apex.
             if (!a.pastApex && inSpan(pct, rc.pctApex, rc.pctExit))
